@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: certa-backend-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # El origen del cliente web. Sin el, el navegador bloquea toda peticion.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_MODEL_VERSION
+        sync: false
+      - key: BUDGET_MAX_QUERIES
+        value: "3000"
+      - key: DEBUG
+        value: "false"
+
