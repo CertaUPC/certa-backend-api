@@ -1,0 +1,97 @@
+name: Verificación
+
+# Corre en cada cambio para que la regresión se detecte cuando se introduce y no
+# al final del sprint. Ningún cambio se incorpora sin pasar por aquí.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  # Un empujón nuevo sobre la misma rama cancela la verificación anterior: no
+  # tiene sentido gastar minutos en un commit que ya quedó atrás.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verificacion:
+    name: Dominio, estilo y pruebas
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Regla de dependencia
+        # Antes que las pruebas: si el dominio importara infraestructura, la
+        # comparación entre modelos del objetivo cuarto dejaría de ser válida, y
+        # eso invalida el resultado aunque todas las pruebas pasen.
+        run: python tools/check_architecture.py
+
+      - name: Estilo y errores estáticos
+        run: ruff check src tests tools
+
+      - name: Pruebas
+        run: pytest --cov=src --cov-report=term-missing --cov-report=xml
+
+      - name: Comprobaciones sin dependencias
+        # Corren con biblioteca estándar. Verifican que el proyecto siga siendo
+        # ejecutable en una máquina sin entorno preparado.
+        run: python tools/check_all.py
+
+      - name: Migraciones aplicables
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./ci.db
+        run: |
+          python -m alembic upgrade head
+          python -m alembic downgrade base
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cobertura
+          path: coverage.xml
+          retention-days: 7
+
+  seguridad:
+    name: Análisis del propio código
+    runs-on: ubuntu-latest
+    # No bloquea la incorporación: el proyecto sostiene que el análisis estático
+    # produce falsos positivos, así que tratar cada hallazgo como error de
+    # compilación contradiría su propia tesis. Se informa y se revisa.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar el analizador
+        run: pip install semgrep
+
+      - name: Analizar
+        run: |
+          semgrep --config p/security-audit \
+                  --sarif --output resultado.sarif \
+                  --metrics=off --disable-version-check \
+                  src || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hallazgos-sarif
+          path: resultado.sarif
+          retention-days: 30
