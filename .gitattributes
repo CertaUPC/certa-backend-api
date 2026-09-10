@@ -1,0 +1,9 @@
+# Los finales de línea se normalizan en el repositorio y se adaptan al sistema
+# de cada quien al sacar el código. Evita que un cambio de plataforma aparezca
+# como si el archivo entero se hubiera reescrito.
+* text=auto eol=lf
+
+*.png binary
+*.docx binary
+*.xlsx binary
+*.pdf binary
