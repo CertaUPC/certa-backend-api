@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .experimentation.interfaces.rest.experiment_router import (
@@ -43,8 +43,9 @@ async def lifespan(app: FastAPI):
         logger.info("Esquema creado en modo depuración")
 
     logger.info(
-        "Certa listo. Proveedor de modelo: %s",
+        "Certa listo. Proveedor de modelo: %s. Origenes admitidos: %s",
         "configurado" if settings.llm_configured else "no configurado",
+        ", ".join(settings.cors_origin_list) or "ninguno",
     )
     try:
         yield
@@ -78,11 +79,35 @@ app.include_router(executions_router)
 app.include_router(experiment_router)
 
 
+async def _estado_de_la_base(container: Container) -> str:
+    """Consulta la base y ademas comprueba que el esquema este aplicado.
+
+    Distinguir ambos casos importa: sin conexion es configuracion del entorno,
+    y con conexion pero sin tablas es que la migracion no corrio.
+    """
+    from sqlalchemy import text
+
+    try:
+        async with container.sessions() as s:
+            await s.execute(text("SELECT 1"))
+            try:
+                await s.execute(text("SELECT 1 FROM usuarios LIMIT 1"))
+            except Exception:  # noqa: BLE001
+                return "conecta, pero falta el esquema: ejecutar alembic upgrade head"
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"sin conexion: {type(exc).__name__}"
+
+
 @app.get("/health", tags=["Servicio"])
-async def health() -> dict:
+async def health(request: Request) -> dict:
     settings = get_settings()
+    container = getattr(request.app.state, "container", None)
+    base = await _estado_de_la_base(container) if container else "sin inicializar"
     return {
-        "status": "ok",
+        "status": "ok" if base == "ok" else "degradado",
         "service": settings.app_name,
+        "version": app.version,
+        "database": base,
         "language_model": "configurado" if settings.llm_configured else "no configurado",
     }
