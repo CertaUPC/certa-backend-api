@@ -25,7 +25,7 @@ from src.finding_validation.infrastructure.persistence.sql_repositories import (
     SqlFindingRepository,
     SqlVerdictRepository,
 )
-from src.shared.database import Base, ProjectRow
+from src.shared.database import Base, ProjectRow, normalize_database_url
 
 PROJECT_ID = uuid4()
 
@@ -289,3 +289,51 @@ class TestContextPurge:
         )
         assert await c_repo.purge_by_execution(e.id) == 1
         assert await c_repo.purge_by_execution(e.id) == 0
+
+
+class TestNormalizacionDeLaCadena:
+    """La cadena que entregan los proveedores gestionados viene en formato libpq.
+
+    Si no se adapta, el primer despliegue falla con un error que no dice lo que
+    pasa realmente.
+    """
+
+    def test_elige_el_controlador_asincrono(self):
+        url, _ = normalize_database_url("postgresql://u:c@host/certa")
+        assert url.startswith("postgresql+asyncpg://")
+
+    def test_retira_los_parametros_que_asyncpg_no_conoce(self):
+        url, args = normalize_database_url(
+            "postgresql://u:c@host/certa?sslmode=require&channel_binding=require"
+        )
+        assert "sslmode" not in url
+        assert "channel_binding" not in url
+        assert args["ssl"] is True
+
+    def test_desactiva_la_cache_en_el_extremo_agrupado(self):
+        """El agrupador multiplexa conexiones y ahi las sentencias preparadas
+        de asyncpg dejan de ser validas entre una y otra."""
+        _, args = normalize_database_url(
+            "postgresql://u:c@ep-x-pooler.aws.neon.tech/certa?sslmode=require"
+        )
+        assert args["statement_cache_size"] == 0
+
+    def test_el_extremo_directo_conserva_la_cache(self):
+        _, args = normalize_database_url(
+            "postgresql://u:c@ep-x.aws.neon.tech/certa?sslmode=require"
+        )
+        assert "statement_cache_size" not in args
+
+    def test_conserva_la_contrasena(self):
+        url, _ = normalize_database_url("postgresql://u:clave-secreta@host/certa")
+        assert "clave-secreta" in url
+
+    def test_no_toca_una_cadena_ya_correcta(self):
+        url, args = normalize_database_url("postgresql+asyncpg://u:c@host/certa")
+        assert url == "postgresql+asyncpg://u:c@host/certa"
+        assert args == {}
+
+    def test_no_toca_sqlite(self):
+        url, args = normalize_database_url("sqlite+aiosqlite:///./certa.db")
+        assert url == "sqlite+aiosqlite:///./certa.db"
+        assert args == {}
