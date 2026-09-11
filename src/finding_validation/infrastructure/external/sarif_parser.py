@@ -164,6 +164,10 @@ def parse_sarif(payload: dict[str, Any]) -> SarifIngestion:
                 rule_id,
                 (rule.get("fullDescription") or {}).get("text"),
                 (rule.get("shortDescription") or {}).get("text"),
+                # Algunas herramientas etiquetan el resultado y no la regla.
+                # Sin esto el hallazgo llega sin categoría y queda fuera de
+                # toda medición contra verdad conocida.
+                result.get("properties"),
             )
 
             ingestion.findings.append(

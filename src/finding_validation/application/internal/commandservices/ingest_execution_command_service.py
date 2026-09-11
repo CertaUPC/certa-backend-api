@@ -6,10 +6,12 @@ from pathlib import Path
 from uuid import UUID
 
 from ....domain.entities.execution import Execution
+from ....domain.entities.finding import Finding
 from ....domain.repositories.repositories import (
     ExecutionRepository,
     FindingRepository,
 )
+from ....domain.services.ground_truth_port import GroundTruthPort
 from ....domain.value_objects.scope_filter import ScopeFilter
 from ....infrastructure.external.sarif_parser import (
     SarifError,
@@ -27,6 +29,7 @@ class IngestResult:
     ingested: int
     filtered_out: int
     skipped: list[str]
+    labeled: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -50,6 +53,8 @@ class IngestResult:
             detalle += f", {self.filtered_out} fuera del alcance"
         if self.skipped:
             detalle += f", {len(self.skipped)} omitidos por datos incompletos"
+        if self.labeled:
+            detalle += f", {self.labeled} con verdad conocida"
         return detalle
 
 
@@ -60,9 +65,13 @@ class IngestExecutionCommandService:
         self,
         execution_repository: ExecutionRepository,
         finding_repository: FindingRepository,
+        ground_truth: GroundTruthPort | None = None,
     ) -> None:
         self._executions = execution_repository
         self._findings = finding_repository
+        # Solo los conjuntos de referencia traen etiqueta. Un proyecto real
+        # ingresa sin ella y el resto del flujo no cambia.
+        self._ground_truth = ground_truth
 
     async def from_payload(
         self,
@@ -89,6 +98,7 @@ class IngestExecutionCommandService:
         alcance = scope or ScopeFilter.unrestricted()
         admitidos = alcance.apply(ingestion.findings)
         descartados = len(ingestion.findings) - len(admitidos)
+        etiquetados = self._label(admitidos)
 
         if not ingestion.ruleset_version:
             # La versión del conjunto de reglas es condición para comparar dos
@@ -115,7 +125,25 @@ class IngestExecutionCommandService:
             ingested=len(admitidos),
             filtered_out=descartados,
             skipped=ingestion.skipped,
+            labeled=etiquetados,
         )
+
+    def _label(self, findings: list[Finding]) -> int:
+        """Adjunta la verdad conocida y devuelve cuántos la recibieron."""
+        if self._ground_truth is None:
+            return 0
+        etiquetados = 0
+        for finding in findings:
+            verdad = self._ground_truth.truth_for(finding)
+            if verdad is not None:
+                finding.known_truth = verdad
+                etiquetados += 1
+        if not etiquetados and findings:
+            logger.warning(
+                "Ningún hallazgo coincidió con el conjunto de referencia. "
+                "Revisa que las rutas del SARIF apunten a los casos de prueba."
+            )
+        return etiquetados
 
 
 __all__ = ["IngestExecutionCommandService", "IngestResult", "SarifError"]

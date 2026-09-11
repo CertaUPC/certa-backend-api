@@ -4,8 +4,8 @@ Revision ID: 89c7ef767641
 Revises: 
 Create Date: 2026-09-10 20:52:23.856231
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import Text  # lo emite el autogenerado sin prefijo
 from sqlalchemy.dialects import postgresql
 

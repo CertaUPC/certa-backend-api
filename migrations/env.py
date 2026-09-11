@@ -16,9 +16,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.shared.config import get_settings  # noqa: E402
-from src.shared.database import Base, normalize_database_url  # noqa: E402
-import src.shared.database_experiment  # noqa: E402,F401  registra sus tablas
+import src.shared.database_experiment  # noqa: F401  registra sus tablas
+from src.shared.config import get_settings
+from src.shared.database import Base, normalize_database_url
 
 config = context.config
 if config.config_file_name is not None:

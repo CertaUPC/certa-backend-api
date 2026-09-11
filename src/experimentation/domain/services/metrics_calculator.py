@@ -107,8 +107,9 @@ class MetricsCalculator:
     def anchor_rate(self, verified_first_try: int, total: int) -> float:
         """Proporción de veredictos anclados a la primera consulta.
 
-        Es el umbral de diseño del 85%: por debajo, el reintento domina el costo
-        de operación y el mecanismo deja de ser viable.
+        El criterio declarado es 85%. Por debajo, más de uno de cada siete
+        veredictos exige una segunda consulta y el costo por hallazgo se
+        duplica.
         """
         return verified_first_try / total if total else 0.0
 
