@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     max_context_lines: int = 250
     retention_days: int = 30
 
+    # Resultados esperados del conjunto de referencia. Vacío en un despliegue
+    # normal: solo la prueba de concepto mide contra verdad conocida.
+    ground_truth_path: str = ""
+
     @field_validator("llm_temperature")
     @classmethod
     def _temperature_must_be_zero(cls, v: float) -> float:

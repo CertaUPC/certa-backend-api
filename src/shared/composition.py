@@ -28,6 +28,9 @@ from ..finding_validation.domain.services.priority_calculator import PriorityCal
 from ..finding_validation.infrastructure.external.code_reader_registry import (
     CodeReaderRegistry,
 )
+from ..finding_validation.infrastructure.external.owasp_benchmark_ground_truth import (
+    OwaspBenchmarkGroundTruth,
+)
 from ..finding_validation.infrastructure.external.prompt_builder import CURRENT_VERSION
 from ..finding_validation.infrastructure.persistence.sql_repositories import (
     SqlCodeContextRepository,
@@ -59,6 +62,19 @@ class Container:
         self.prompt_version = CURRENT_VERSION
 
         self.language_model = self._build_language_model()
+        self.ground_truth = self._build_ground_truth()
+
+    def _build_ground_truth(self):
+        """Carga la verdad conocida del conjunto de referencia, si la hay.
+
+        Un despliegue normal no la tiene y no debe tenerla. Solo la prueba de
+        concepto del primer objetivo mide contra etiquetas.
+        """
+        if not self.settings.ground_truth_path:
+            return None
+        cargador = OwaspBenchmarkGroundTruth(self.settings.ground_truth_path)
+        logger.info("Verdad conocida cargada: %d casos de prueba", len(cargador))
+        return cargador
 
     def _build_language_model(self):
         """Construye el adaptador del proveedor, o None si no está configurado.
@@ -99,7 +115,9 @@ class Container:
     # -- servicios por petición -------------------------------------------
     def ingest_service(self, session: AsyncSession) -> IngestExecutionCommandService:
         return IngestExecutionCommandService(
-            SqlExecutionRepository(session), SqlFindingRepository(session)
+            SqlExecutionRepository(session),
+            SqlFindingRepository(session),
+            self.ground_truth,
         )
 
     def validator(

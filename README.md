@@ -92,9 +92,10 @@ Cada contexto se organiza igual:
 exteriores. Declara mediante puertos qué necesita del mundo, y la
 infraestructura provee la implementación.
 
-No es estética. El objetivo específico cuarto compara clases de modelo de
-lenguaje entre sí, y esa comparación solo vale si la lógica sometida a prueba
-permanece idéntica al cambiar de proveedor. `tools/check_architecture.py`
+No es estética. El proyecto compara clases de modelo de lenguaje entre sí, dos
+veces: en la prueba de concepto que elige el modelo y en la evaluación funcional
+de la herramienta terminada. Esa comparación solo vale si la lógica sometida a
+prueba permanece idéntica al cambiar de proveedor. `tools/check_architecture.py`
 recorre el árbol sintáctico de cada módulo del dominio y falla si aparece un
 import prohibido; la integración continua lo corre antes que las pruebas.
 
@@ -239,6 +240,33 @@ mismo verificador, misma consulta. Cada modelo lleva su propio presupuesto.
 `PrepareSessionCommandService` precomputa los veredictos antes de una sesión con
 participantes y reparte los hallazgos en dos lotes disjuntos, alternando por
 huella para que el reparto sea reproducible.
+
+## Verdad conocida
+
+Un proyecto real no viene etiquetado: si viniera, no haría falta la herramienta.
+Los conjuntos de referencia sí, y son los únicos donde se puede medir corrección
+funcional sin depender del juicio de nadie.
+
+`OwaspBenchmarkGroundTruth` lee el archivo de resultados esperados del conjunto y
+adjunta la etiqueta durante la ingesta. `GROUND_TRUTH_PATH` la activa; vacía en
+cualquier despliegue normal.
+
+Etiqueta solo cuando la categoría del hallazgo coincide con la del caso de
+prueba. Si el analizador dispara una regla de otra familia sobre el mismo
+archivo, el hallazgo queda sin etiqueta: el conjunto no afirma nada al respecto,
+y darlo por falso positivo inflaría la exactitud medida.
+
+`tools/poc_baseline.py` mide la línea base del analizador solo, que es contra lo
+que hay que competir. No necesita proveedor de modelo.
+
+```
+venv\Scripts\python.exe tools\poc_baseline.py ^
+    --expected ruta\expectedresults-1.2.csv --sarif salida.sarif
+```
+
+El recuento va por caso de prueba y no por hallazgo. Tres reglas disparadas
+sobre el mismo archivo son un acierto, no tres; contar hallazgos premiaría a la
+herramienta más ruidosa.
 
 ## Migraciones
 

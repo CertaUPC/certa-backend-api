@@ -100,6 +100,7 @@ class IngestResponse(BaseModel):
     ingested: int
     filtered_out: int
     skipped: list[str]
+    labeled: int = 0
     message: str
 
 

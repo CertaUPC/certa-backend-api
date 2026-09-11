@@ -87,6 +87,7 @@ async def ingest(
         ingested=result.ingested,
         filtered_out=result.filtered_out,
         skipped=result.skipped,
+        labeled=result.labeled,
         message=result.describe(),
     )
 
