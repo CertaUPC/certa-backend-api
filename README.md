@@ -268,6 +268,25 @@ El recuento va por caso de prueba y no por hallazgo. Tres reglas disparadas
 sobre el mismo archivo son un acierto, no tres; contar hallazgos premiaría a la
 herramienta más ruidosa.
 
+## Elegir el modelo
+
+El identificador exacto de un modelo cambia, y escribirlo de memoria produce un
+404 a mitad de una corrida. `tools/list_models.py` consulta el catálogo del
+proveedor y lista identificador, ventana y precio por millón de tokens.
+
+```
+venv\Scripts\python.exe tools\list_models.py --filter claude --filter qwen
+venv\Scripts\python.exe tools\list_models.py --filter claude --csv modelos.csv
+```
+
+Con `--csv` deja el listado en disco. El benchmarking del objetivo primero
+compara clases de modelo, y esa comparación necesita el precio y la ventana
+vigentes el día en que se midió, no los que uno recuerde.
+
+Cambiar de modelo es cambiar `LLM_BASE_URL` y `LLM_MODEL`. Si hiciera falta
+tocar el dominio, la comparación entre modelos no sería válida, y por eso
+`tools/check_architecture.py` falla cuando el dominio importa un adaptador.
+
 ## Migraciones
 
 ```
