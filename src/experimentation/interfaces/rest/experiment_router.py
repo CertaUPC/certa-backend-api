@@ -164,8 +164,8 @@ async def metrics(
     rows = (
         await session.execute(
             select(VerdictRow, FindingRow)
-            .join(FindingRow, FindingRow.id == VerdictRow.hallazgo_id)
-            .where(FindingRow.ejecucion_id == str(execution_id))
+            .join(FindingRow, FindingRow.id == VerdictRow.finding_id)
+            .where(FindingRow.execution_id == str(execution_id))
         )
     ).all()
     if not rows:
@@ -174,11 +174,11 @@ async def metrics(
         )
 
     calculator = MetricsCalculator()
-    pares = [(f.verdad_conocida, v.valor == "explotable") for v, f in rows]
+    pares = [(f.known_truth, v.value == "explotable") for v, f in rows]
     confusion = calculator.confusion(pares)
-    etiquetas = [v.valor for v, _ in rows]
+    etiquetas = [v.value for v, _ in rows]
     quality = calculator.assess_run(etiquetas)
-    anclados = sum(1 for v, _ in rows if v.anclaje_verificado and v.intentos == 1)
+    anclados = sum(1 for v, _ in rows if v.anchor_verified and v.attempts == 1)
 
     return MetricsResponse(
         execution_id=execution_id,

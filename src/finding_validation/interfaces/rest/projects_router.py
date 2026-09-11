@@ -20,12 +20,12 @@ router = APIRouter(prefix="/api/v1/projects", tags=["Proyectos"])
 def _to_response(row: ProjectRow, executions: int) -> ProjectResponse:
     return ProjectResponse(
         id=UUID(row.id),
-        name=row.nombre,
-        language=row.lenguaje,
-        repository_path=row.ruta_repositorio,
-        is_public_dataset=row.es_conjunto_publico,
+        name=row.name,
+        language=row.language,
+        repository_path=row.repository_path,
+        is_public_dataset=row.is_public_dataset,
         execution_count=executions,
-        created_at=row.creado_en,
+        created_at=row.created_at,
     )
 
 
@@ -33,15 +33,15 @@ def _to_response(row: ProjectRow, executions: int) -> ProjectResponse:
 async def list_projects(session: SessionDep, user: UserDep) -> list[ProjectResponse]:
     """Proyectos con su número de ejecuciones, el más reciente primero."""
     rows = (
-        await session.execute(select(ProjectRow).order_by(ProjectRow.creado_en.desc()))
+        await session.execute(select(ProjectRow).order_by(ProjectRow.created_at.desc()))
     ).scalars().all()
 
     # Un solo agrupamiento en lugar de una consulta por proyecto.
     conteos = dict(
         (
             await session.execute(
-                select(ExecutionRow.proyecto_id, func.count(ExecutionRow.id)).group_by(
-                    ExecutionRow.proyecto_id
+                select(ExecutionRow.project_id, func.count(ExecutionRow.id)).group_by(
+                    ExecutionRow.project_id
                 )
             )
         ).all()
@@ -59,7 +59,7 @@ async def create_project(
     ruta = body.repository_path.strip() or body.name.strip()
     existente = (
         await session.execute(
-            select(ProjectRow).where(ProjectRow.ruta_repositorio == ruta)
+            select(ProjectRow).where(ProjectRow.repository_path == ruta)
         )
     ).scalar_one_or_none()
     if existente is not None:
@@ -72,10 +72,10 @@ async def create_project(
 
     row = ProjectRow(
         id=str(uuid4()),
-        nombre=body.name.strip(),
-        lenguaje=body.language,
-        ruta_repositorio=ruta,
-        es_conjunto_publico=body.is_public_dataset,
+        name=body.name.strip(),
+        language=body.language,
+        repository_path=ruta,
+        is_public_dataset=body.is_public_dataset,
     )
     session.add(row)
     await session.commit()

@@ -29,18 +29,18 @@ def _now() -> datetime:
 
 
 class UserRow(Base):
-    __tablename__ = "usuarios"
+    __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    correo: Mapped[str] = mapped_column(String(160), unique=True)
-    contrasena_hash: Mapped[str] = mapped_column(String(120))
-    rol: Mapped[str] = mapped_column(String(20), default="desarrollador")
-    activo: Mapped[bool] = mapped_column(Boolean, default=True)
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    email: Mapped[str] = mapped_column(String(160), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(120))
+    role: Mapped[str] = mapped_column(String(20), default="desarrollador")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     __table_args__ = (
         CheckConstraint(
-            "rol IN ('desarrollador','investigador','lider_tecnico')", name="ck_usuarios_rol"
+            "role IN ('desarrollador','investigador','lider_tecnico')", name="ck_users_role"
         ),
     )
 
@@ -48,14 +48,14 @@ class UserRow(Base):
 class ParticipantRow(Base):
     """Sin nombre ni correo: el análisis nunca necesita la identidad."""
 
-    __tablename__ = "participantes"
+    __tablename__ = "participants"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    codigo_anonimo: Mapped[str] = mapped_column(String(20), unique=True)
-    anios_experiencia: Mapped[int] = mapped_column(Integer)
-    tiene_rol_seguridad: Mapped[bool] = mapped_column(Boolean, default=False)
-    consentimiento_en: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    anonymous_code: Mapped[str] = mapped_column(String(20), unique=True)
+    years_of_experience: Mapped[int] = mapped_column(Integer)
+    has_security_role: Mapped[bool] = mapped_column(Boolean, default=False)
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     sessions: Mapped[list["SessionRow"]] = relationship(
         back_populates="participant", cascade="all, delete-orphan"
@@ -63,23 +63,23 @@ class ParticipantRow(Base):
 
     __table_args__ = (
         # Criterio de exclusión del estudio, sostenido por el motor.
-        CheckConstraint("tiene_rol_seguridad = 0", name="ck_participantes_rol"),
+        CheckConstraint("has_security_role = false", name="ck_participants_role"),
     )
 
 
 class SessionRow(Base):
-    __tablename__ = "sesiones"
+    __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    participante_id: Mapped[str] = mapped_column(
-        ForeignKey("participantes.id", ondelete="CASCADE")
+    participant_id: Mapped[str] = mapped_column(
+        ForeignKey("participants.id", ondelete="CASCADE")
     )
-    orden_condiciones: Mapped[list] = mapped_column(VARIANT_JSON, default=list)
-    lote_primero: Mapped[str] = mapped_column(String(10))
-    lote_segundo: Mapped[str] = mapped_column(String(10))
-    completa: Mapped[bool] = mapped_column(Boolean, default=False)
-    iniciada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    finalizada_en: Mapped[datetime | None] = mapped_column(
+    condition_order: Mapped[list] = mapped_column(VARIANT_JSON, default=list)
+    first_batch: Mapped[str] = mapped_column(String(10))
+    second_batch: Mapped[str] = mapped_column(String(10))
+    is_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -90,54 +90,54 @@ class SessionRow(Base):
 
 
 class DecisionRow(Base):
-    __tablename__ = "decisiones"
+    __tablename__ = "decisions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    sesion_id: Mapped[str | None] = mapped_column(
-        ForeignKey("sesiones.id", ondelete="CASCADE"), nullable=True
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=True
     )
     # Identidad, no clave foránea: la frontera entre contextos delimitados.
-    hallazgo_id: Mapped[str] = mapped_column(String(36))
-    participante_id: Mapped[str] = mapped_column(String(36))
-    valor: Mapped[str] = mapped_column(String(20))
-    segundos: Mapped[float] = mapped_column(Float)
-    condicion: Mapped[str] = mapped_column(String(20))
-    es_vigente: Mapped[bool] = mapped_column(Boolean, default=True)
-    comentario: Mapped[str | None] = mapped_column(Text, nullable=True)
-    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finding_id: Mapped[str] = mapped_column(String(36))
+    participant_id: Mapped[str] = mapped_column(String(36))
+    value: Mapped[str] = mapped_column(String(20))
+    seconds: Mapped[float] = mapped_column(Float)
+    condition: Mapped[str] = mapped_column(String(20))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     session: Mapped["SessionRow | None"] = relationship(back_populates="decisions")
 
     __table_args__ = (
-        Index("ix_decisiones_hallazgo", "hallazgo_id"),
-        Index("ix_decisiones_participante", "participante_id", "condicion"),
-        CheckConstraint("segundos > 0", name="ck_decisiones_segundos"),
+        Index("ix_decisions_finding", "finding_id"),
+        Index("ix_decisions_participant", "participant_id", "condition"),
+        CheckConstraint("seconds > 0", name="ck_decisions_seconds"),
         CheckConstraint(
-            "valor IN ('confirmado','descartado','dudoso')", name="ck_decisiones_valor"
+            "value IN ('confirmado','descartado','dudoso')", name="ck_decisions_value"
         ),
     )
 
 
 class TransformationRow(Base):
-    __tablename__ = "transformaciones"
+    __tablename__ = "transformations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    hallazgo_original_id: Mapped[str] = mapped_column(String(36))
-    hallazgo_transformado_id: Mapped[str] = mapped_column(String(36))
-    tipo: Mapped[str] = mapped_column(String(30))
-    anclaje_activo: Mapped[bool] = mapped_column(Boolean, default=True)
-    veredicto_original: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    veredicto_transformado: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    original_finding_id: Mapped[str] = mapped_column(String(36))
+    transformed_finding_id: Mapped[str] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(30))
+    anchoring_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    original_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    transformed_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     __table_args__ = (
         UniqueConstraint(
-            "hallazgo_original_id", "hallazgo_transformado_id", "anclaje_activo",
-            name="uq_transf_par",
+            "original_finding_id", "transformed_finding_id", "anchoring_enabled",
+            name="uq_transformations_pair",
         ),
         CheckConstraint(
-            "hallazgo_original_id <> hallazgo_transformado_id",
-            name="ck_transf_distintos",
+            "original_finding_id <> transformed_finding_id",
+            name="ck_transformations_distinct",
         ),
     )
