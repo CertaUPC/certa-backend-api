@@ -13,7 +13,6 @@ abrir la aplicación. Códigos de salida pensados para un paso de integración:
 
 import argparse
 import asyncio
-import csv
 import sys
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -40,6 +39,7 @@ from .shared.composition import Container
 from .shared.config import get_settings
 from .shared.database import Base, ProjectRow
 from .shared.tracing import correlate, install_memory_sink
+from .spoc_export import RunContext, export
 
 
 async def _ensure_schema(container: Container) -> None:
@@ -200,9 +200,26 @@ async def cmd_compare(args: argparse.Namespace) -> int:
     filas = _scorecard(comparacion, verdad)
     _print_scorecard(filas, comparacion)
 
-    if args.csv:
-        _write_scorecard(Path(args.csv), filas)
-        print(f"Resultados en {args.csv}\n")
+    if args.out_dir:
+        async with container.sessions() as s:
+            registrados = await SqlVerdictRepository(s).list_by_execution(execution.id)
+        contexto = RunContext(
+            execution=execution,
+            findings=findings,
+            models=args.model,
+            repetitions=args.repetitions,
+            batch_size=args.batch_size,
+            max_queries=args.max_queries,
+            settings=settings,
+            prompt_version=str(container.prompt_version),
+        )
+        escritos = export(
+            Path(args.out_dir), contexto, filas, registrados, comparacion.agreement()
+        )
+        print("Paquete de la corrida:")
+        for ruta in escritos:
+            print(f"  {ruta}")
+        print()
 
     await container.dispose()
     return 0
@@ -244,13 +261,6 @@ def _print_scorecard(filas: list[dict], comparacion) -> None:
     print(f"\nAcuerdo entre corridas: {comparacion.agreement():.4f}")
     print(f"Desacuerdos: {len(comparacion.disagreements())}")
     print(f"Costo total: {sum(f['usd'] for f in filas):.4f} USD\n")
-
-
-def _write_scorecard(destino: Path, filas: list[dict]) -> None:
-    with destino.open("w", encoding="utf-8", newline="") as archivo:
-        escritor = csv.DictWriter(archivo, fieldnames=list(filas[0].keys()))
-        escritor.writeheader()
-        escritor.writerows(filas)
 
 
 async def cmd_check(args: argparse.Namespace) -> int:
@@ -326,7 +336,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Acota el lote. Conviene fijarlo: el costo crece con él")
     m.add_argument("--max-queries", type=int, default=1000,
                    help="Tope de consultas por modelo, como red de seguridad")
-    m.add_argument("--csv", help="Guarda la tabla de resultados")
+    m.add_argument("--out-dir",
+                   help="Carpeta donde dejar el paquete de la corrida: cuadro de "
+                        "resultados, detalle por veredicto y manifiesto")
 
     c = sub.add_parser("check", help="Analiza, valida y falla si hay hallazgos")
     common(c)

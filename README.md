@@ -296,8 +296,32 @@ la diferencia medida dejaría de ser atribuible al modelo.
 Cada corrida lleva presupuesto y caché propios. La caché no se comparte entre
 repeticiones: reutilizarla anularía justo lo que la repetición mide.
 
-El CSV es la evidencia de esa corrida. Los veredictos quedan además en la base,
-con su modelo, su versión y la versión de la consulta.
+Con `--out-dir` deja el paquete de la corrida:
+
+- `scorecard.csv`, la tabla que se lee.
+- `verdicts.csv`, una fila por veredicto, con la que se puede recontar cualquier
+  celda de esa tabla.
+- `manifest.json`, las condiciones de la corrida: huella del lote, versión de
+  reglas del analizador, versión de la consulta, temperatura, identificadores de
+  modelo y anfitrión del proveedor.
+
+Una tabla sola no es evidencia reproducible: no dice sobre qué hallazgos se
+midió ni con qué versión de la consulta, y quien quisiera comprobarla tendría
+que creerse el número. La huella del lote permite verificar que se está midiendo
+sobre el mismo conjunto sin tener que distribuirlo.
+
+La clave del proveedor no se escribe en ninguno de los tres archivos. Solo viaja
+el anfitrión, que es lo que hace falta para saber contra qué se midió.
+
+`tools/spoc_figures.py` dibuja la evidencia gráfica a partir de ese paquete.
+
+```
+py tools\spoc_figures.py spoc\ --dest figuras```
+
+Produce el desempeño por clase de modelo, las matrices de confusión, la tasa de
+anclaje, el desempeño frente al costo por consulta y, si hubo repeticiones, la
+estabilidad del veredicto. No recalcula nada: toma los números del paquete, de
+modo que lo que se ve sea lo mismo que se reportó.
 
 ## Elegir el modelo
 
