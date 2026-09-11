@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.shared.config import get_settings  # noqa: E402
-from src.shared.database import Base  # noqa: E402
+from src.shared.database import Base, normalize_database_url  # noqa: E402
 import src.shared.database_experiment  # noqa: E402,F401  registra sus tablas
 
 config = context.config
@@ -28,7 +28,11 @@ target_metadata = Base.metadata
 
 # Alembic trabaja de forma síncrona sobre el motor asíncrono, de modo que la
 # cadena debe traer el controlador correcto.
-_url = os.getenv("DATABASE_URL") or get_settings().database_url
+# La misma correccion que aplica el servicio: si no, la migracion falla
+# justo cuando se despliega por primera vez.
+_url, _conectar = normalize_database_url(
+    os.getenv("DATABASE_URL") or get_settings().database_url
+)
 config.set_main_option("sqlalchemy.url", _url)
 
 
@@ -57,6 +61,7 @@ async def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=_conectar,
     )
     async with engine.connect() as connection:
         await connection.run_sync(_do_run)
