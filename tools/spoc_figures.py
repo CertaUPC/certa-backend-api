@@ -164,18 +164,25 @@ def fig_costo(filas: list[dict], dest: Path) -> Path:
 
 
 def fig_estabilidad(veredictos: list[dict], dest: Path) -> Path | None:
-    """Solo tiene sentido si hubo repeticiones del mismo modelo."""
+    """Solo tiene sentido si hubo repeticiones del mismo modelo.
+
+    Una estabilidad perfecta se dibuja igual: que las tres corridas coincidan
+    en todo es un resultado, y compararlo contra el criterio es justo lo que el
+    anexo debe mostrar. Antes se omitía la figura en ese caso, de modo que el
+    mejor resultado posible era el único que no se veía.
+    """
     por_hallazgo = defaultdict(lambda: defaultdict(set))
+    repeticiones = defaultdict(set)
     for v in veredictos:
         por_hallazgo[v["model"]][v["finding_id"]].add(v["veredicto"])
+        repeticiones[v["model"]].add(v["repetition"])
     estables = {}
     for modelo, hallazgos in por_hallazgo.items():
-        repetidos = {k: val for k, val in hallazgos.items() if val}
-        if not repetidos:
-            continue
-        coinciden = sum(1 for val in repetidos.values() if len(val) == 1)
-        estables[modelo] = coinciden / len(repetidos)
-    if not estables or all(v == 1.0 for v in estables.values()):
+        if len(repeticiones[modelo]) < 2:
+            continue          # con una sola corrida no hay nada que contrastar
+        coinciden = sum(1 for val in hallazgos.values() if len(val) == 1)
+        estables[modelo] = coinciden / len(hallazgos) if hallazgos else 0.0
+    if not estables:
         return None
 
     fig, ax = plt.subplots(figsize=(6.4, 3.6), dpi=200)
@@ -219,7 +226,7 @@ def main() -> int:
     if inestabilidad:
         escritas.append(inestabilidad)
     else:
-        print("Sin repeticiones que comparar: no se dibuja la estabilidad.")
+        print("Ningún modelo se corrió más de una vez: la estabilidad no se dibuja.")
 
     lote = manifiesto["lote"]
     print(f"\nCorrida del {manifiesto['fecha_utc']}")

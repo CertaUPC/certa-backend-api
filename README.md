@@ -313,6 +313,22 @@ sobre el mismo conjunto sin tener que distribuirlo.
 La clave del proveedor no se escribe en ninguno de los tres archivos. Solo viaja
 el anfitrión, que es lo que hace falta para saber contra qué se midió.
 
+### Ensayo antes de pagar
+
+```
+venv\Scripts\python.exe tools\spoc_rehearsal.py
+```
+
+Levanta un servidor que habla el contrato del proveedor y corre contra él la
+cadena entera con el código de producción: adaptador HTTP, constructor de
+consulta, verificador de anclaje, presupuesto, persistencia, cuadro de
+resultados, paquete y figuras. Lo único simulado es lo que hay al otro lado del
+cable.
+
+Conviene correrlo antes de cada corrida pagada. Los fallos que de verdad
+ocurren no son de lógica sino de cableado: una variable de entorno mal puesta,
+un contrato que cambió de nombres, una dependencia que falta.
+
 `tools/spoc_figures.py` dibuja la evidencia gráfica a partir de ese paquete.
 
 ```

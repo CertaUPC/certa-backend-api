@@ -5,3 +5,4 @@ pytest-cov>=6.0.0
 ruff>=0.8.0
 aiosqlite>=0.20.0
 matplotlib>=3.9.0
+semgrep>=1.90.0
