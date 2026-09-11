@@ -261,7 +261,17 @@ anterior de la misma rama.
 
 `render.yaml` describe el servicio en capa gratuita, con `JWT_SECRET` generado
 por la plataforma y las credenciales del proveedor marcadas para carga manual.
-La comprobación de salud apunta a `/health`.
+La comprobación de salud apunta a `/health`. La migración corre en el paso de
+construcción: con `DEBUG` en falso el servicio no crea tablas por su cuenta, de
+modo que sin ese paso la base quedaría vacía en el primer despliegue.
+
+La versión de Python se fija en `.python-version`. Render no lee `runtime.txt`,
+y su valor por omisión para los servicios nuevos va por delante del que se
+prueba aquí.
+
+La cadena de conexión de un Postgres gestionado se pega tal cual: viene en
+formato libpq, con el controlador síncrono y con `sslmode`, y `create_engine` la
+adapta sola antes de construir el motor.
 
 ## Entorno
 
