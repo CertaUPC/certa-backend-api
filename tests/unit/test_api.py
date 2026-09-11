@@ -124,9 +124,9 @@ async def client(tmp_path: Path):
         s.add(
             ProjectRow(
                 id=str(PROJECT_ID),
-                nombre="Benchmark",
-                ruta_repositorio="/repos/bench",
-                es_conjunto_publico=True,
+                name="Benchmark",
+                repository_path="/repos/bench",
+                is_public_dataset=True,
             )
         )
         await s.commit()
@@ -140,15 +140,15 @@ async def client(tmp_path: Path):
 
 
 async def _token(client: AsyncClient, role: str = "investigador") -> str:
-    correo = f"{role}@upc.edu.pe"
+    email = f"{role}@upc.edu.pe"
     await client.post(
         "/api/v1/auth/register",
-        json={"email": correo, "password": "contrasena-segura"},
+        json={"email": email, "password": "contrasena-segura"},
         params={"role": role},
     )
     r = await client.post(
         "/api/v1/auth/login",
-        json={"email": correo, "password": "contrasena-segura"},
+        json={"email": email, "password": "contrasena-segura"},
     )
     return r.json()["access_token"]
 
@@ -161,7 +161,9 @@ class TestHealth:
     async def test_health_is_open(self, client):
         r = await client.get("/health")
         assert r.status_code == 200
-        assert r.json()["status"] == "ok"
+        cuerpo = r.json()
+        assert cuerpo["status"] == "ok", cuerpo
+        assert cuerpo["database"] == "ok", cuerpo
 
 
 class TestAuth:
@@ -402,7 +404,7 @@ class TestRunAndAudit:
         r = await client.get(f"/api/v1/executions/{eid}/export", headers=_auth(token))
         assert r.status_code == 200
         cuerpo = r.text
-        assert "hallazgo_id" in cuerpo
+        assert "finding_id" in cuerpo
         assert "@upc.edu.pe" not in cuerpo
 
     async def test_export_without_verdicts_is_not_empty_file(self, client):

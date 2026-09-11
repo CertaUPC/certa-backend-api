@@ -97,7 +97,7 @@ async def _project_names(session, ids: set[UUID]) -> dict[UUID, str]:
         return {}
     filas = (
         await session.execute(
-            select(ProjectRow.id, ProjectRow.nombre).where(
+            select(ProjectRow.id, ProjectRow.name).where(
                 ProjectRow.id.in_([str(i) for i in ids])
             )
         )
@@ -110,9 +110,9 @@ async def list_executions(
     session: SessionDep, user: UserDep, project_id: UUID | None = None
 ) -> list[ExecutionResponse]:
     """Ejecuciones más recientes primero."""
-    stmt = select(ExecutionRow).order_by(ExecutionRow.creada_en.desc())
+    stmt = select(ExecutionRow).order_by(ExecutionRow.created_at.desc())
     if project_id:
-        stmt = stmt.where(ExecutionRow.proyecto_id == str(project_id))
+        stmt = stmt.where(ExecutionRow.project_id == str(project_id))
     rows = (await session.execute(stmt)).scalars().all()
 
     repo = SqlExecutionRepository(session)
@@ -194,66 +194,66 @@ async def list_findings(
     rows = (
         await session.execute(
             select(FindingRow)
-            .where(FindingRow.ejecucion_id == str(execution_id))
-            .order_by(FindingRow.prioridad.desc().nullslast(), FindingRow.huella)
+            .where(FindingRow.execution_id == str(execution_id))
+            .order_by(FindingRow.priority.desc().nullslast(), FindingRow.fingerprint)
         )
     ).scalars().all()
 
     verdict_rows = (
         await session.execute(
             select(VerdictRow).where(
-                VerdictRow.hallazgo_id.in_([r.id for r in rows] or [""])
+                VerdictRow.finding_id.in_([r.id for r in rows] or [""])
             )
         )
     ).scalars().all()
     latest: dict[str, VerdictRow] = {}
     todos: dict[str, list[VerdictRow]] = {}
     for v in verdict_rows:
-        actual = latest.get(v.hallazgo_id)
-        if actual is None or v.repeticion >= actual.repeticion:
-            latest[v.hallazgo_id] = v
-        todos.setdefault(v.hallazgo_id, []).append(v)
+        actual = latest.get(v.finding_id)
+        if actual is None or v.repetition >= actual.repetition:
+            latest[v.finding_id] = v
+        todos.setdefault(v.finding_id, []).append(v)
 
     salida: list[FindingResponse] = []
     for r in rows:
         v = latest.get(r.id)
         if cwe and (r.cwe or "").upper() != cwe.upper():
             continue
-        if verdict and (v is None or v.valor != verdict):
+        if verdict and (v is None or v.value != verdict):
             continue
-        if anchor is not None and (v is None or v.anclaje_verificado != anchor):
+        if anchor is not None and (v is None or v.anchor_verified != anchor):
             continue
         salida.append(
             FindingResponse(
                 id=UUID(r.id),
-                rule_id=r.regla_id,
+                rule_id=r.rule_id,
                 cwe=r.cwe,
-                severity=r.severidad_regla,
-                file_path=r.archivo,
-                start_line=r.linea_inicio,
-                end_line=r.linea_fin,
-                message=r.mensaje,
-                fingerprint=r.huella,
-                priority=r.prioridad,
-                priority_reason=r.motivo_prioridad,
+                severity=r.rule_severity,
+                file_path=r.file_path,
+                start_line=r.start_line,
+                end_line=r.end_line,
+                message=r.message,
+                fingerprint=r.fingerprint,
+                priority=r.priority,
+                priority_reason=r.priority_reason,
                 stability=None
                 if v is None
                 else StabilityResponse(
                     runs=len(todos[r.id]),
-                    agree=sum(1 for x in todos[r.id] if x.valor == v.valor),
+                    agree=sum(1 for x in todos[r.id] if x.value == v.value),
                 ),
                 verdict=None
                 if v is None
                 else VerdictResponse(
-                    model=v.modelo,
-                    model_version=v.version_modelo,
-                    value=v.valor,
-                    confidence=v.confianza,
-                    anchor_verified=v.anclaje_verificado,
-                    attempts=v.intentos,
-                    reused=v.reutilizado_de is not None,
-                    justification=v.justificacion,
-                    cited_lines=list(v.lineas_citadas or []),
+                    model=v.model,
+                    model_version=v.model_version,
+                    value=v.value,
+                    confidence=v.confidence,
+                    anchor_verified=v.anchor_verified,
+                    attempts=v.attempts,
+                    reused=v.reused_from is not None,
+                    justification=v.justification,
+                    cited_lines=list(v.cited_lines or []),
                 ),
             )
         )
@@ -309,10 +309,10 @@ async def export_decisions(
     writer = csv.writer(buffer)
     writer.writerow(
         [
-            "hallazgo_id", "regla", "cwe", "severidad", "archivo", "linea",
-            "huella", "verdad_conocida", "modelo", "version_modelo", "repeticion",
-            "veredicto", "confianza", "anclaje_verificado", "intentos",
-            "lineas_citadas", "reutilizado", "latencia_ms",
+            "finding_id", "regla", "cwe", "severidad", "file_path", "linea",
+            "fingerprint", "known_truth", "model", "model_version", "repetition",
+            "veredicto", "confidence", "anchor_verified", "attempts",
+            "cited_lines", "reutilizado", "latency_ms",
         ]
     )
     for v in verdicts:

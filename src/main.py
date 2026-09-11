@@ -91,7 +91,7 @@ async def _estado_de_la_base(container: Container) -> str:
         async with container.sessions() as s:
             await s.execute(text("SELECT 1"))
             try:
-                await s.execute(text("SELECT 1 FROM usuarios LIMIT 1"))
+                await s.execute(text("SELECT 1 FROM users LIMIT 1"))
             except Exception:  # noqa: BLE001
                 return "conecta, pero falta el esquema: ejecutar alembic upgrade head"
         return "ok"
