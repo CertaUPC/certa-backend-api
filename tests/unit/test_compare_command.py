@@ -11,12 +11,13 @@ from uuid import uuid4
 
 import pytest
 
-from src.cli import _scorecard, _write_scorecard
+from src.cli import _scorecard
 from src.finding_validation.application.internal.commandservices.compare_models_command_service import (
     Comparison,
     ModelRun,
 )
 from src.finding_validation.domain.entities.verdict import VerdictValue
+from src.spoc_export import write_scorecard
 
 
 def run(nombre, veredictos, repeticion=1, anclados=None, usd=0.0):
@@ -114,7 +115,7 @@ class TestCsv:
             run("dos", {ids[0]: N, ids[2]: N}, usd=0.5),
         ])
         destino = tmp_path / "spoc.csv"
-        _write_scorecard(destino, _scorecard(c, verdad))
+        write_scorecard(destino, _scorecard(c, verdad))
         filas = list(csv.DictReader(destino.open(encoding="utf-8")))
         assert [f["modelo"] for f in filas] == ["uno", "dos"]
         assert float(filas[0]["usd"]) == 1.25
