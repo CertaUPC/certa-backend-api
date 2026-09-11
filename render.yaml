@@ -11,8 +11,10 @@ services:
     healthCheckPath: /health
     envVars:
       # El origen del cliente web. Sin el, el navegador bloquea toda peticion.
+      # No es secreto, de modo que va versionado y no hay que recordarlo al
+      # recrear el servicio.
       - key: CORS_ORIGINS
-        sync: false
+        value: https://certa-upc.netlify.app
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET
