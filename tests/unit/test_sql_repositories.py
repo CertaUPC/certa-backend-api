@@ -40,9 +40,9 @@ async def session():
         s.add(
             ProjectRow(
                 id=str(PROJECT_ID),
-                nombre="OWASP Benchmark",
-                ruta_repositorio="/repos/benchmark",
-                es_conjunto_publico=True,
+                name="OWASP Benchmark",
+                repository_path="/repos/benchmark",
+                is_public_dataset=True,
             )
         )
         await s.commit()
@@ -195,8 +195,8 @@ class TestFindings:
         row = (
             await session.execute(select(FindingRow).where(FindingRow.id == str(f.id)))
         ).scalar_one()
-        assert row.prioridad == pytest.approx(0.87)
-        assert "explotable" in row.motivo_prioridad
+        assert row.priority == pytest.approx(0.87)
+        assert "explotable" in row.priority_reason
 
 
 class TestVerdictReuse:

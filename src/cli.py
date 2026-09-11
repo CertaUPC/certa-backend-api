@@ -48,12 +48,12 @@ async def _project_id(container: Container, name: str, path: str) -> UUID:
     """Encuentra el proyecto por su ruta, o lo crea."""
     async with container.sessions() as s:
         row = (
-            await s.execute(select(ProjectRow).where(ProjectRow.ruta_repositorio == path))
+            await s.execute(select(ProjectRow).where(ProjectRow.repository_path == path))
         ).scalar_one_or_none()
         if row:
             return UUID(row.id)
         pid = uuid4()
-        s.add(ProjectRow(id=str(pid), nombre=name, ruta_repositorio=path))
+        s.add(ProjectRow(id=str(pid), name=name, repository_path=path))
         await s.commit()
         return pid
 
@@ -150,26 +150,26 @@ async def cmd_check(args: argparse.Namespace) -> int:
     settings = get_settings()
     container = Container(settings)
     async with container.sessions() as s:
-        ejecuciones = await SqlExecutionRepository(s).list_by_project(
+        executions = await SqlExecutionRepository(s).list_by_project(
             await _project_id(container, args.project or "", str(Path(args.path).resolve()))
         )
-        if not ejecuciones:
+        if not executions:
             print("No hay ejecuciones que revisar.")
             return 0
-        ultima = ejecuciones[0]
+        ultima = executions[0]
 
         budget = container.new_budget()
         if settings.llm_configured:
             with correlate():
                 await container.runner(s, budget).run(ultima, worker="cli")
 
-        veredictos = await SqlVerdictRepository(s).list_by_execution(ultima.id)
+        verdicts = await SqlVerdictRepository(s).list_by_execution(ultima.id)
 
     umbral = {
         "real": {VerdictValue.EXPLOITABLE},
         "revisar": {VerdictValue.EXPLOITABLE, VerdictValue.NOT_VERIFIABLE},
     }[args.fail_on]
-    marcados = [v for v in veredictos if v.value in umbral]
+    marcados = [v for v in verdicts if v.value in umbral]
 
     print(f"\n{len(marcados)} hallazgos superan el umbral '{args.fail_on}'")
     for v in marcados[:10]:

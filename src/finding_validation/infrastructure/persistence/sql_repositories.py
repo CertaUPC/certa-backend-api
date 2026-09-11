@@ -37,38 +37,38 @@ class SqlExecutionRepository:
     def _to_row(e: Execution) -> ExecutionRow:
         return ExecutionRow(
             id=str(e.id),
-            proyecto_id=str(e.project_id),
-            herramienta=e.tool_name,
-            version_reglas=e.ruleset_version,
-            estado=e.status.value,
-            alcance=e.scope.describe(),
-            total_hallazgos=e.total_findings,
-            validados=e.validated_findings,
-            tomada_por=e.claimed_by,
-            motivo_fallo=e.failure_reason,
-            contexto_purgado=e.context_purged,
-            iniciada_en=e.started_at,
-            finalizada_en=e.finished_at,
-            creada_en=e.created_at,
+            project_id=str(e.project_id),
+            tool_name=e.tool_name,
+            ruleset_version=e.ruleset_version,
+            status=e.status.value,
+            scope=e.scope.describe(),
+            total_findings=e.total_findings,
+            validated_findings=e.validated_findings,
+            claimed_by=e.claimed_by,
+            failure_reason=e.failure_reason,
+            context_purged=e.context_purged,
+            started_at=e.started_at,
+            finished_at=e.finished_at,
+            created_at=e.created_at,
         )
 
     @staticmethod
     def _to_entity(r: ExecutionRow) -> Execution:
         return Execution(
             id=UUID(r.id),
-            project_id=UUID(r.proyecto_id),
-            tool_name=r.herramienta,
-            ruleset_version=r.version_reglas,
-            status=ExecutionStatus(r.estado),
-            total_findings=r.total_hallazgos,
-            validated_findings=r.validados,
+            project_id=UUID(r.project_id),
+            tool_name=r.tool_name,
+            ruleset_version=r.ruleset_version,
+            status=ExecutionStatus(r.status),
+            total_findings=r.total_findings,
+            validated_findings=r.validated_findings,
             scope=ScopeFilter.unrestricted(),
-            claimed_by=r.tomada_por,
-            failure_reason=r.motivo_fallo,
-            context_purged=r.contexto_purgado,
-            started_at=r.iniciada_en,
-            finished_at=r.finalizada_en,
-            created_at=r.creada_en,
+            claimed_by=r.claimed_by,
+            failure_reason=r.failure_reason,
+            context_purged=r.context_purged,
+            started_at=r.started_at,
+            finished_at=r.finished_at,
+            created_at=r.created_at,
         )
 
     async def save(self, execution: Execution) -> None:
@@ -76,14 +76,14 @@ class SqlExecutionRepository:
         if existing is None:
             self._session.add(self._to_row(execution))
         else:
-            existing.estado = execution.status.value
-            existing.total_hallazgos = execution.total_findings
-            existing.validados = execution.validated_findings
-            existing.tomada_por = execution.claimed_by
-            existing.motivo_fallo = execution.failure_reason
-            existing.contexto_purgado = execution.context_purged
-            existing.iniciada_en = execution.started_at
-            existing.finalizada_en = execution.finished_at
+            existing.status = execution.status.value
+            existing.total_findings = execution.total_findings
+            existing.validated_findings = execution.validated_findings
+            existing.claimed_by = execution.claimed_by
+            existing.failure_reason = execution.failure_reason
+            existing.context_purged = execution.context_purged
+            existing.started_at = execution.started_at
+            existing.finished_at = execution.finished_at
         await self._session.commit()
 
     async def get(self, execution_id: UUID) -> Execution | None:
@@ -101,8 +101,8 @@ class SqlExecutionRepository:
 
         stmt = (
             select(ExecutionRow)
-            .where(ExecutionRow.estado == ExecutionStatus.PENDING.value)
-            .order_by(ExecutionRow.creada_en)
+            .where(ExecutionRow.status == ExecutionStatus.PENDING.value)
+            .order_by(ExecutionRow.created_at)
             .limit(1)
         )
         if dialect == "postgresql":
@@ -119,12 +119,12 @@ class SqlExecutionRepository:
                 update(ExecutionRow)
                 .where(
                     ExecutionRow.id == row.id,
-                    ExecutionRow.estado == ExecutionStatus.PENDING.value,
+                    ExecutionRow.status == ExecutionStatus.PENDING.value,
                 )
                 .values(
-                    estado=ExecutionStatus.IN_PROGRESS.value,
-                    tomada_por=worker,
-                    iniciada_en=datetime.now(timezone.utc),
+                    status=ExecutionStatus.IN_PROGRESS.value,
+                    claimed_by=worker,
+                    started_at=datetime.now(timezone.utc),
                 )
             )
             if result.rowcount == 0:
@@ -134,9 +134,9 @@ class SqlExecutionRepository:
             await self._session.refresh(row)
             return self._to_entity(row)
 
-        row.estado = ExecutionStatus.IN_PROGRESS.value
-        row.tomada_por = worker
-        row.iniciada_en = datetime.now(timezone.utc)
+        row.status = ExecutionStatus.IN_PROGRESS.value
+        row.claimed_by = worker
+        row.started_at = datetime.now(timezone.utc)
         await self._session.commit()
         return self._to_entity(row)
 
@@ -144,8 +144,8 @@ class SqlExecutionRepository:
         rows = (
             await self._session.execute(
                 select(ExecutionRow)
-                .where(ExecutionRow.proyecto_id == str(project_id))
-                .order_by(ExecutionRow.creada_en.desc())
+                .where(ExecutionRow.project_id == str(project_id))
+                .order_by(ExecutionRow.created_at.desc())
             )
         ).scalars()
         return [self._to_entity(r) for r in rows]
@@ -160,29 +160,29 @@ class SqlFindingRepository:
     def _to_entity(r: FindingRow) -> Finding:
         return Finding(
             id=UUID(r.id),
-            rule_id=r.regla_id,
-            severity=r.severidad_regla,
-            location=CodeLocation(r.archivo, r.linea_inicio, r.linea_fin),
-            fingerprint=Fingerprint(r.huella),
+            rule_id=r.rule_id,
+            severity=r.rule_severity,
+            location=CodeLocation(r.file_path, r.start_line, r.end_line),
+            fingerprint=Fingerprint(r.fingerprint),
             cwe=r.cwe,
-            message=r.mensaje,
-            known_truth=r.verdad_conocida,
+            message=r.message,
+            known_truth=r.known_truth,
         )
 
     async def save_all(self, findings: list[Finding], execution_id: UUID) -> None:
         self._session.add_all(
             FindingRow(
                 id=str(f.id),
-                ejecucion_id=str(execution_id),
-                regla_id=f.rule_id,
+                execution_id=str(execution_id),
+                rule_id=f.rule_id,
                 cwe=f.cwe,
-                severidad_regla=f.severity,
-                archivo=f.location.file_path,
-                linea_inicio=f.location.start_line,
-                linea_fin=f.location.end_line,
-                mensaje=f.message,
-                huella=f.fingerprint.value,
-                verdad_conocida=f.known_truth,
+                rule_severity=f.severity,
+                file_path=f.location.file_path,
+                start_line=f.location.start_line,
+                end_line=f.location.end_line,
+                message=f.message,
+                fingerprint=f.fingerprint.value,
+                known_truth=f.known_truth,
             )
             for f in findings
         )
@@ -196,8 +196,8 @@ class SqlFindingRepository:
         rows = (
             await self._session.execute(
                 select(FindingRow)
-                .where(FindingRow.ejecucion_id == str(execution_id))
-                .order_by(FindingRow.prioridad.desc().nullslast(), FindingRow.huella)
+                .where(FindingRow.execution_id == str(execution_id))
+                .order_by(FindingRow.priority.desc().nullslast(), FindingRow.fingerprint)
             )
         ).scalars()
         return [self._to_entity(r) for r in rows]
@@ -210,14 +210,14 @@ class SqlFindingRepository:
         Es lo que permite reanudar sin repetir: al retomar una ejecución
         interrumpida, no se vuelve a pagar por lo ya validado.
         """
-        con_veredicto = select(VerdictRow.hallazgo_id).distinct()
+        con_veredicto = select(VerdictRow.finding_id).distinct()
         stmt = (
             select(FindingRow)
             .where(
-                FindingRow.ejecucion_id == str(execution_id),
+                FindingRow.execution_id == str(execution_id),
                 FindingRow.id.not_in(con_veredicto),
             )
-            .order_by(FindingRow.creado_en)
+            .order_by(FindingRow.created_at)
         )
         if limit:
             stmt = stmt.limit(limit)
@@ -228,7 +228,7 @@ class SqlFindingRepository:
         await self._session.execute(
             update(FindingRow)
             .where(FindingRow.id == str(finding_id))
-            .values(prioridad=score, motivo_prioridad=reason)
+            .values(priority=score, priority_reason=reason)
         )
         await self._session.commit()
 
@@ -242,15 +242,15 @@ class SqlCodeContextRepository:
         self._session.add(
             ContextRow(
                 id=str(context.id),
-                hallazgo_id=str(context.finding_id),
-                funcion_contenedora=context.enclosing_function,
-                llamadores=list(context.callers),
-                saneadores=list(context.sanitizers),
-                lineas_disponibles=sorted(context.available_lines),
-                fuente_identificada=context.source_expression,
-                profundidad_llamadores=context.caller_depth,
-                degradado_a_archivo=context.degraded_to_file,
-                texto_contexto=context.text,
+                finding_id=str(context.finding_id),
+                enclosing_function=context.enclosing_function,
+                callers=list(context.callers),
+                sanitizers=list(context.sanitizers),
+                available_lines=sorted(context.available_lines),
+                source_expression=context.source_expression,
+                caller_depth=context.caller_depth,
+                degraded_to_file=context.degraded_to_file,
+                context_text=context.text,
             )
         )
         await self._session.commit()
@@ -258,24 +258,24 @@ class SqlCodeContextRepository:
     async def get_by_finding(self, finding_id: UUID) -> CodeContext | None:
         row = (
             await self._session.execute(
-                select(ContextRow).where(ContextRow.hallazgo_id == str(finding_id))
+                select(ContextRow).where(ContextRow.finding_id == str(finding_id))
             )
         ).scalar_one_or_none()
-        if row is None or row.texto_contexto is None:
+        if row is None or row.context_text is None:
             # Sin texto, el contexto fue purgado: no se puede reconstruir ni se
             # debe fingir que sí.
             return None
         return CodeContext(
             id=UUID(row.id),
-            finding_id=UUID(row.hallazgo_id),
-            enclosing_function=row.funcion_contenedora,
-            text=row.texto_contexto,
-            available_lines=frozenset(row.lineas_disponibles or []),
-            callers=tuple(row.llamadores or ()),
-            sanitizers=tuple(row.saneadores or ()),
-            source_expression=row.fuente_identificada,
-            caller_depth=row.profundidad_llamadores,
-            degraded_to_file=row.degradado_a_archivo,
+            finding_id=UUID(row.finding_id),
+            enclosing_function=row.enclosing_function,
+            text=row.context_text,
+            available_lines=frozenset(row.available_lines or []),
+            callers=tuple(row.callers or ()),
+            sanitizers=tuple(row.sanitizers or ()),
+            source_expression=row.source_expression,
+            caller_depth=row.caller_depth,
+            degraded_to_file=row.degraded_to_file,
         )
 
     async def purge_by_execution(self, execution_id: UUID) -> int:
@@ -285,15 +285,15 @@ class SqlCodeContextRepository:
         no destruye ningún resultado del estudio.
         """
         de_la_ejecucion = select(FindingRow.id).where(
-            FindingRow.ejecucion_id == str(execution_id)
+            FindingRow.execution_id == str(execution_id)
         )
         result = await self._session.execute(
             update(ContextRow)
             .where(
-                ContextRow.hallazgo_id.in_(de_la_ejecucion),
-                ContextRow.texto_contexto.is_not(None),
+                ContextRow.finding_id.in_(de_la_ejecucion),
+                ContextRow.context_text.is_not(None),
             )
-            .values(texto_contexto=None)
+            .values(context_text=None)
         )
         await self._session.commit()
         return result.rowcount or 0
@@ -308,45 +308,45 @@ class SqlVerdictRepository:
     def _to_entity(r: VerdictRow) -> Verdict:
         return Verdict(
             id=UUID(r.id),
-            finding_id=UUID(r.hallazgo_id),
-            model=r.modelo,
-            model_version=r.version_modelo,
-            value=VerdictValue(r.valor),
+            finding_id=UUID(r.finding_id),
+            model=r.model,
+            model_version=r.model_version,
+            value=VerdictValue(r.value),
             justification=Justification(
-                text=r.justificacion or "(sin justificación registrada)",
-                cited_lines=frozenset(r.lineas_citadas or []),
+                text=r.justification or "(sin justificación registrada)",
+                cited_lines=frozenset(r.cited_lines or []),
             ),
-            anchor_verified=r.anclaje_verificado,
-            confidence=r.confianza,
-            temperature=r.temperatura,
-            repetition=r.repeticion,
-            attempts=r.intentos,
-            reused_from=UUID(r.reutilizado_de) if r.reutilizado_de else None,
-            latency_ms=r.latencia_ms,
-            input_tokens=r.tokens_entrada,
-            output_tokens=r.tokens_salida,
+            anchor_verified=r.anchor_verified,
+            confidence=r.confidence,
+            temperature=r.temperature,
+            repetition=r.repetition,
+            attempts=r.attempts,
+            reused_from=UUID(r.reused_from) if r.reused_from else None,
+            latency_ms=r.latency_ms,
+            input_tokens=r.input_tokens,
+            output_tokens=r.output_tokens,
         )
 
     async def save(self, verdict: Verdict, prompt_version: str | None = None) -> None:
         self._session.add(
             VerdictRow(
                 id=str(verdict.id),
-                hallazgo_id=str(verdict.finding_id),
-                modelo=verdict.model,
-                version_modelo=verdict.model_version,
-                version_consulta=prompt_version,
-                temperatura=verdict.temperature,
-                repeticion=verdict.repetition,
-                valor=verdict.value.value,
-                confianza=verdict.confidence,
-                lineas_citadas=sorted(verdict.justification.cited_lines),
-                anclaje_verificado=verdict.anchor_verified,
-                intentos=verdict.attempts,
-                justificacion=verdict.justification.text,
-                latencia_ms=verdict.latency_ms,
-                tokens_entrada=verdict.input_tokens,
-                tokens_salida=verdict.output_tokens,
-                reutilizado_de=str(verdict.reused_from) if verdict.reused_from else None,
+                finding_id=str(verdict.finding_id),
+                model=verdict.model,
+                model_version=verdict.model_version,
+                prompt_version=prompt_version,
+                temperature=verdict.temperature,
+                repetition=verdict.repetition,
+                value=verdict.value.value,
+                confidence=verdict.confidence,
+                cited_lines=sorted(verdict.justification.cited_lines),
+                anchor_verified=verdict.anchor_verified,
+                attempts=verdict.attempts,
+                justification=verdict.justification.text,
+                latency_ms=verdict.latency_ms,
+                input_tokens=verdict.input_tokens,
+                output_tokens=verdict.output_tokens,
+                reused_from=str(verdict.reused_from) if verdict.reused_from else None,
             )
         )
         await self._session.commit()
@@ -355,8 +355,8 @@ class SqlVerdictRepository:
         rows = (
             await self._session.execute(
                 select(VerdictRow)
-                .where(VerdictRow.hallazgo_id == str(finding_id))
-                .order_by(VerdictRow.creado_en)
+                .where(VerdictRow.finding_id == str(finding_id))
+                .order_by(VerdictRow.created_at)
             )
         ).scalars()
         return [self._to_entity(r) for r in rows]
@@ -372,14 +372,14 @@ class SqlVerdictRepository:
         row = (
             await self._session.execute(
                 select(VerdictRow)
-                .join(FindingRow, FindingRow.id == VerdictRow.hallazgo_id)
+                .join(FindingRow, FindingRow.id == VerdictRow.finding_id)
                 .where(
-                    FindingRow.huella == fingerprint.value,
-                    VerdictRow.modelo == model,
-                    VerdictRow.version_modelo == model_version,
-                    VerdictRow.reutilizado_de.is_(None),
+                    FindingRow.fingerprint == fingerprint.value,
+                    VerdictRow.model == model,
+                    VerdictRow.model_version == model_version,
+                    VerdictRow.reused_from.is_(None),
                 )
-                .order_by(VerdictRow.creado_en)
+                .order_by(VerdictRow.created_at)
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -389,8 +389,8 @@ class SqlVerdictRepository:
         rows = (
             await self._session.execute(
                 select(VerdictRow)
-                .join(FindingRow, FindingRow.id == VerdictRow.hallazgo_id)
-                .where(FindingRow.ejecucion_id == str(execution_id))
+                .join(FindingRow, FindingRow.id == VerdictRow.finding_id)
+                .where(FindingRow.execution_id == str(execution_id))
             )
         ).scalars()
         return [self._to_entity(r) for r in rows]

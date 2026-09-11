@@ -107,8 +107,8 @@ class TestTracing:
 
     def test_long_strings_are_omitted(self, sink):
         with correlate("largo"):
-            emit(Stage.CONTEXT, "ok", mensaje="x" * 500)
-        assert "omitidos" in sink.by_correlation("largo")[0].data["mensaje"]
+            emit(Stage.CONTEXT, "ok", message="x" * 500)
+        assert "omitidos" in sink.by_correlation("largo")[0].data["message"]
 
     def test_timed_records_duration(self, sink):
         with correlate("medido"), timed(Stage.ANCHOR, hallazgo="f1") as t:
@@ -135,7 +135,7 @@ async def env(tmp_path: Path):
     maker = async_sessionmaker(engine, expire_on_commit=False)
 
     async with maker() as s:
-        s.add(ProjectRow(id=str(PROJECT_ID), nombre="P", ruta_repositorio="/r"))
+        s.add(ProjectRow(id=str(PROJECT_ID), name="P", repository_path="/r"))
         await s.commit()
 
         execution = Execution(project_id=PROJECT_ID, ruleset_version="1.0")
