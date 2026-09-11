@@ -288,7 +288,7 @@ class TestCompareModels:
         c = await self._service(env).compare(env["execution"], [a, b])
         assert c.agreement() == 0.0
         assert len(c.disagreements()) == 4
-        assert set(c.disagreements()[0]["por_modelo"]) == {"m1", "m2"}
+        assert set(c.disagreements()[0]["por_corrida"]) == {"m1#1", "m2#1"}
 
     async def test_each_model_gets_its_own_budget(self, env):
         a = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m1", "v1")

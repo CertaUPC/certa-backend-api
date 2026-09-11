@@ -268,6 +268,37 @@ El recuento va por caso de prueba y no por hallazgo. Tres reglas disparadas
 sobre el mismo archivo son un acierto, no tres; contar hallazgos premiaría a la
 herramienta más ruidosa.
 
+## La prueba de concepto
+
+Corre el mismo lote con varias clases de modelo y las contrasta contra la verdad
+conocida. Es un trabajo por lotes, no un servicio: se ejecuta desde esta máquina
+contra la base, no se despliega en ningún sitio.
+
+```
+py -m src.cli analyze ./corpus --project "Conjunto de referencia"
+py -m src.cli compare <execution-id> ^
+    --model anthropic/claude-opus-5 ^
+    --model anthropic/claude-sonnet-5 ^
+    --model qwen/qwen3.8-27b ^
+    --batch-size 350 --csv spoc.csv
+```
+
+Exige que los hallazgos traigan etiqueta: sin verdad conocida solo podría
+medirse el acuerdo entre modelos, que no dice cuál acierta. Si el lote llega sin
+etiquetar, el comando se detiene y lo explica en vez de producir una tabla
+vacía de significado.
+
+Con `--repetitions 3` y un solo modelo se mide la estabilidad del veredicto. Lo
+único que cambia entre corridas es el identificador del modelo: temperatura,
+tiempo de espera y ritmo de consulta se mantienen, porque si cambiara algo más
+la diferencia medida dejaría de ser atribuible al modelo.
+
+Cada corrida lleva presupuesto y caché propios. La caché no se comparte entre
+repeticiones: reutilizarla anularía justo lo que la repetición mide.
+
+El CSV es la evidencia de esa corrida. Los veredictos quedan además en la base,
+con su modelo, su versión y la versión de la consulta.
+
 ## Elegir el modelo
 
 El identificador exacto de un modelo cambia, y escribirlo de memoria produce un
