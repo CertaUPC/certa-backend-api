@@ -3,7 +3,10 @@ services:
     name: certa-backend-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # La migracion corre aqui. Con DEBUG en falso el servicio no crea tablas
+    # por su cuenta, de modo que sin este paso la base quedaria vacia y todo
+    # recorrido responderia error en el primer despliegue.
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
