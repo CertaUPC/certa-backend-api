@@ -72,10 +72,15 @@ class Comparison:
         return iguales / len(comunes)
 
     def disagreements(self) -> list[dict]:
-        """Hallazgos donde los modelos no coinciden.
+        """Hallazgos donde las corridas no coinciden.
 
-        Son los interesantes: donde el juicio depende del modelo y no del código,
-        que es exactamente lo que el estudio quiere caracterizar.
+        Son los interesantes: donde el juicio depende de la corrida y no del
+        código, que es exactamente lo que el estudio quiere caracterizar.
+
+        La clave incluye la repetición y no solo el modelo. Al medir estabilidad
+        se corre el mismo modelo varias veces, y agrupar por nombre colapsaría
+        esas corridas en una sola entrada: los desacuerdos entre repeticiones
+        quedarían invisibles justo cuando son lo que se busca.
         """
         if len(self.runs) < 2:
             return []
@@ -84,9 +89,11 @@ class Comparison:
             comunes &= set(r.verdicts)
         salida = []
         for fid in comunes:
-            valores = {r.model: r.verdicts[fid].value for r in self.runs}
+            valores = {
+                f"{r.model}#{r.repetition}": r.verdicts[fid].value for r in self.runs
+            }
             if len(set(valores.values())) > 1:
-                salida.append({"finding_id": str(fid), "por_modelo": valores})
+                salida.append({"finding_id": str(fid), "por_corrida": valores})
         return salida
 
     def report(self) -> dict:

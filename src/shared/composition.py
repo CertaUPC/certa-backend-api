@@ -10,6 +10,9 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from ..finding_validation.application.internal.commandservices.compare_models_command_service import (
+    CompareModelsCommandService,
+)
 from ..finding_validation.application.internal.commandservices.ingest_execution_command_service import (
     IngestExecutionCommandService,
 )
@@ -118,6 +121,45 @@ class Container:
             SqlExecutionRepository(session),
             SqlFindingRepository(session),
             self.ground_truth,
+        )
+
+    def language_model_named(self, model: str):
+        """Un adaptador para el modelo indicado, con el resto de la configuración
+        intacta.
+
+        Lo emplea el benchmarking, que compara clases de modelo entre sí. Entre
+        corridas solo puede cambiar el identificador: si cambiara la temperatura,
+        el tiempo de espera o el ritmo de consulta, la diferencia medida dejaría
+        de ser atribuible al modelo.
+        """
+        if not (self.settings.llm_base_url and self.settings.llm_api_key):
+            raise RuntimeError(
+                "Falta el proveedor. Define llm_base_url y llm_api_key en el "
+                "entorno. El identificador del modelo llega por argumento."
+            )
+
+        from ..finding_validation.infrastructure.external.chat_completions_language_model import (
+            ChatCompletionsLanguageModel,
+        )
+
+        return ChatCompletionsLanguageModel(
+            base_url=self.settings.llm_base_url,
+            api_key=self.settings.llm_api_key,
+            model=model,
+            version=model,
+            temperature=self.settings.llm_temperature,
+            timeout_seconds=self.settings.llm_timeout_seconds,
+            queries_per_minute=self.settings.llm_queries_per_minute,
+        )
+
+    def comparator(self, session: AsyncSession) -> CompareModelsCommandService:
+        return CompareModelsCommandService(
+            finding_repository=SqlFindingRepository(session),
+            verdict_repository=SqlVerdictRepository(session),
+            code_reader=self.code_reader,
+            anchor_verifier=self.anchor_verifier,
+            prefilter=self.prefilter,
+            prompt_version=self.prompt_version,
         )
 
     def validator(

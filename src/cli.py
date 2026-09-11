@@ -8,10 +8,12 @@ abrir la aplicación. Códigos de salida pensados para un paso de integración:
     py -m src.cli analyze ./repo --project "Mi proyecto"
     py -m src.cli validate <execution-id>
     py -m src.cli check ./repo --fail-on real
+    py -m src.cli compare <execution-id> --model a --model b --model c
 """
 
 import argparse
 import asyncio
+import csv
 import sys
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -20,6 +22,7 @@ from sqlalchemy import select
 
 import src.shared.database_experiment  # noqa: F401  registra sus tablas
 
+from .experimentation.domain.services.metrics_calculator import MetricsCalculator
 from .finding_validation.domain.entities.execution import Execution
 from .finding_validation.domain.entities.verdict import VerdictValue
 from .finding_validation.domain.value_objects.scope_filter import ScopeFilter
@@ -141,6 +144,115 @@ async def cmd_validate(args: argparse.Namespace) -> int:
     return 0 if not report.interrupted else 2
 
 
+async def cmd_compare(args: argparse.Namespace) -> int:
+    """Corre el mismo lote con varias clases de modelo y las contrasta.
+
+    Es la prueba de concepto del objetivo específico primero. Solo tiene sentido
+    sobre una ejecución cuyos hallazgos traigan verdad conocida: sin etiqueta no
+    hay contra qué medir la exactitud, y el resultado se quedaría en acuerdo
+    entre modelos, que no dice cuál acierta.
+    """
+    settings = get_settings()
+    container = Container(settings)
+
+    async with container.sessions() as s:
+        execution = await SqlExecutionRepository(s).get(UUID(args.execution_id))
+        if execution is None:
+            print("ERROR: no existe esa ejecución", file=sys.stderr)
+            return 2
+
+        findings = await SqlFindingRepository(s).list_by_execution(execution.id)
+        if args.batch_size:
+            findings = findings[: args.batch_size]
+        etiquetados = [f for f in findings if f.has_known_truth]
+        if not etiquetados:
+            print(
+                "ERROR: ninguno de los hallazgos trae verdad conocida. Vuelve a "
+                "ingerir el lote con GROUND_TRUTH_PATH apuntando al conjunto de "
+                "referencia.",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            modelos = [container.language_model_named(m) for m in args.model]
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
+        print(f"Lote de {len(findings)} hallazgos, {len(etiquetados)} con etiqueta")
+        print(f"Modelos: {', '.join(args.model)}")
+        print(f"Repeticiones por modelo: {args.repetitions}\n")
+
+        with correlate() as cid:
+            print(f"correlación {cid}")
+            comparacion = await container.comparator(s).compare(
+                execution,
+                modelos,
+                repetitions=args.repetitions,
+                max_queries_per_model=args.max_queries,
+                usd_per_1k_input=settings.usd_per_1k_input,
+                usd_per_1k_output=settings.usd_per_1k_output,
+                batch_size=args.batch_size,
+            )
+
+    verdad = {f.id: f.known_truth for f in findings if f.has_known_truth}
+    filas = _scorecard(comparacion, verdad)
+    _print_scorecard(filas, comparacion)
+
+    if args.csv:
+        _write_scorecard(Path(args.csv), filas)
+        print(f"Resultados en {args.csv}\n")
+
+    await container.dispose()
+    return 0
+
+
+def _scorecard(comparacion, verdad: dict) -> list[dict]:
+    """Una fila por corrida, con su matriz de confusión frente a la etiqueta."""
+    calculador = MetricsCalculator()
+    filas = []
+    for run in comparacion.runs:
+        pares = [
+            (verdad[fid], valor is VerdictValue.EXPLOITABLE)
+            for fid, valor in run.verdicts.items()
+            if fid in verdad
+        ]
+        matriz = calculador.confusion(pares)
+        filas.append({
+            "modelo": run.model,
+            "repeticion": run.repetition,
+            "veredictos": len(run.verdicts),
+            "contrastados": len(pares),
+            "anclaje_primera": round(run.anchor_rate, 4),
+            "reintentos": run.retries,
+            "no_verificables": run.not_verifiable,
+            "consultas": run.queries,
+            "usd": round(run.usd, 4),
+            **matriz.report(),
+        })
+    return filas
+
+
+def _print_scorecard(filas: list[dict], comparacion) -> None:
+    print(f"\n{'modelo':<34} {'rep':>4} {'F1':>7} {'prec':>7} {'exh':>7} "
+          f"{'anclaje':>8} {'USD':>8}")
+    for f in filas:
+        print(f"{f['modelo']:<34} {f['repeticion']:>4} {f['f1']:>7.3f} "
+              f"{f['precision']:>7.3f} {f['exhaustividad']:>7.3f} "
+              f"{f['anclaje_primera']:>8.3f} {f['usd']:>8.4f}")
+    print(f"\nAcuerdo entre corridas: {comparacion.agreement():.4f}")
+    print(f"Desacuerdos: {len(comparacion.disagreements())}")
+    print(f"Costo total: {sum(f['usd'] for f in filas):.4f} USD\n")
+
+
+def _write_scorecard(destino: Path, filas: list[dict]) -> None:
+    with destino.open("w", encoding="utf-8", newline="") as archivo:
+        escritor = csv.DictWriter(archivo, fieldnames=list(filas[0].keys()))
+        escritor.writeheader()
+        escritor.writerows(filas)
+
+
 async def cmd_check(args: argparse.Namespace) -> int:
     """Analiza, valida y decide si la entrega debe detenerse."""
     codigo = await cmd_analyze(args)
@@ -203,6 +315,19 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("execution_id")
     v.add_argument("--batch-size", type=int, default=None)
 
+    m = sub.add_parser(
+        "compare", help="Corre el lote con varias clases de modelo y las contrasta")
+    m.add_argument("execution_id")
+    m.add_argument("--model", action="append", required=True,
+                   help="Identificador del modelo, repetible. Exige al menos dos")
+    m.add_argument("--repetitions", type=int, default=1,
+                   help="Corridas por modelo. Tres miden la estabilidad del veredicto")
+    m.add_argument("--batch-size", type=int, default=None,
+                   help="Acota el lote. Conviene fijarlo: el costo crece con él")
+    m.add_argument("--max-queries", type=int, default=1000,
+                   help="Tope de consultas por modelo, como red de seguridad")
+    m.add_argument("--csv", help="Guarda la tabla de resultados")
+
     c = sub.add_parser("check", help="Analiza, valida y falla si hay hallazgos")
     common(c)
     c.add_argument(
@@ -215,7 +340,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     install_memory_sink()
     args = build_parser().parse_args(argv)
-    handlers = {"analyze": cmd_analyze, "validate": cmd_validate, "check": cmd_check}
+    handlers = {"analyze": cmd_analyze, "validate": cmd_validate,
+                "compare": cmd_compare, "check": cmd_check}
     return asyncio.run(handlers[args.command](args))
 
 
