@@ -25,6 +25,7 @@ from sqlalchemy import (
 # JSONB en PostgreSQL, JSON en cualquier otro motor. Permite ejercitar el
 # mapeo con SQLite en las pruebas sin levantar una base real.
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -204,8 +205,50 @@ class VerdictRow(Base):
     )
 
 
+# Parametros que solo entiende libpq. asyncpg los rechaza, y la cadena que
+# entregan los proveedores gestionados los trae siempre.
+_SOLO_LIBPQ = ("sslmode", "channel_binding", "options", "target_session_attrs")
+
+
+def normalize_database_url(url: str) -> tuple[str, dict]:
+    """Deja la cadena en la forma que asyncpg admite.
+
+    Devuelve la cadena corregida y los argumentos de conexion que hagan falta.
+    Se aplica sola: pegar la cadena del proveedor tal cual es lo que cualquiera
+    va a hacer, y fallar ahi cuesta una tarde de diagnostico.
+    """
+    u = make_url(url)
+    conectar: dict = {}
+
+    if u.drivername in ("postgresql", "postgres"):
+        u = u.set(drivername="postgresql+asyncpg")
+
+    if u.drivername == "postgresql+asyncpg":
+        consulta = dict(u.query)
+        modo = consulta.pop("sslmode", None)
+        for clave in _SOLO_LIBPQ:
+            consulta.pop(clave, None)
+        u = u.set(query=consulta)
+
+        # libpq cifra con sslmode; asyncpg con ssl. Se traduce en vez de
+        # descartarlo, porque el proveedor exige cifrado.
+        if modo is not None and modo not in ("disable", "allow", "prefer"):
+            conectar["ssl"] = True
+
+        # El extremo agrupado multiplexa conexiones entre clientes, y ahi las
+        # sentencias preparadas de asyncpg dejan de ser validas de una a otra.
+        anfitrion = u.host or ""
+        if "-pooler" in anfitrion or "pgbouncer" in anfitrion:
+            conectar["statement_cache_size"] = 0
+
+    return u.render_as_string(hide_password=False), conectar
+
+
 def create_engine(url: str, echo: bool = False) -> AsyncEngine:
-    return create_async_engine(url, echo=echo, pool_pre_ping=True)
+    cadena, conectar = normalize_database_url(url)
+    return create_async_engine(
+        cadena, echo=echo, pool_pre_ping=True, connect_args=conectar
+    )
 
 
 def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
