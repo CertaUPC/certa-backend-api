@@ -25,6 +25,10 @@ from .experimentation.domain.services.metrics_calculator import MetricsCalculato
 from .finding_validation.domain.entities.execution import Execution
 from .finding_validation.domain.entities.verdict import VerdictValue
 from .finding_validation.domain.value_objects.scope_filter import ScopeFilter
+from .finding_validation.infrastructure.external.sarif_parser import (
+    SarifError,
+    parse_sarif_file,
+)
 from .finding_validation.infrastructure.external.semgrep_analyzer import (
     AnalysisFailed,
     AnalyzerUnavailable,
@@ -67,18 +71,34 @@ async def cmd_analyze(args: argparse.Namespace) -> int:
     await _ensure_schema(container)
 
     ruta = str(Path(args.path).resolve())
-    analyzer = SemgrepAnalyzer(config=args.config, timeout_seconds=args.timeout)
 
-    try:
-        with correlate() as cid:
-            print(f"Analizando {ruta}  (correlación {cid})")
-            findings = await analyzer.analyze(ruta)
-    except AnalyzerUnavailable as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
-    except AnalysisFailed as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
+    if args.sarif:
+        # El analizador ya corrió y su salida está en disco. Correrlo otra vez
+        # sobre el corpus entero costaría minutos y podría no coincidir con la
+        # salida que se archivó como evidencia.
+        try:
+            ingestion = parse_sarif_file(args.sarif)
+        except (SarifError, OSError) as exc:
+            print(f"ERROR: no se pudo leer {args.sarif}: {exc}", file=sys.stderr)
+            return 2
+        findings = ingestion.findings
+        herramienta = ingestion.tool_name or "desconocida"
+        version_reglas = ingestion.ruleset_version or "desconocida"
+        print(f"Leído {args.sarif}: {len(findings)} hallazgos de {herramienta}")
+    else:
+        analyzer = SemgrepAnalyzer(config=args.config, timeout_seconds=args.timeout)
+        herramienta = analyzer.tool_name
+        version_reglas = analyzer.ruleset_version
+        try:
+            with correlate() as cid:
+                print(f"Analizando {ruta}  (correlación {cid})")
+                findings = await analyzer.analyze(ruta)
+        except AnalyzerUnavailable as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        except AnalysisFailed as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
 
     scope = ScopeFilter(
         cwes=frozenset(args.cwe or ()),
@@ -91,11 +111,18 @@ async def cmd_analyze(args: argparse.Namespace) -> int:
     async with container.sessions() as s:
         execution = Execution(
             project_id=project_id,
-            tool_name=analyzer.tool_name,
-            ruleset_version=analyzer.ruleset_version,
+            tool_name=herramienta,
+            ruleset_version=version_reglas,
             total_findings=len(admitidos),
             scope=scope,
         )
+        etiquetados = 0
+        if container.ground_truth is not None:
+            for f in admitidos:
+                verdad = container.ground_truth.truth_for(f)
+                if verdad is not None:
+                    f.known_truth = verdad
+                    etiquetados += 1
         await SqlExecutionRepository(s).save(execution)
         if admitidos:
             await SqlFindingRepository(s).save_all(admitidos, execution.id)
@@ -104,6 +131,10 @@ async def cmd_analyze(args: argparse.Namespace) -> int:
     print(f"Ejecución {execution.id}")
     print(f"  {len(admitidos)} hallazgos ingeridos", end="")
     print(f", {descartados} fuera del alcance" if descartados else "")
+    if etiquetados:
+        print(f"  {etiquetados} con verdad conocida del conjunto de referencia")
+    elif container.ground_truth is not None:
+        print("  AVISO: ninguno coincidió con el conjunto de referencia")
     if not admitidos:
         print("  El análisis no dejó nada que validar.")
     else:
@@ -320,6 +351,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("analyze", help="Analiza un repositorio y crea la ejecución")
     common(a)
+    a.add_argument("--sarif",
+                   help="Ingiere un SARIF ya generado en lugar de correr el "
+                        "analizador. Evita analizar dos veces el mismo corpus")
 
     v = sub.add_parser("validate", help="Valida los hallazgos pendientes")
     v.add_argument("execution_id")
