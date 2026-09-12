@@ -7,6 +7,7 @@ cualquier analizador cambiando el binario y sus argumentos.
 import asyncio
 import json
 import logging
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -17,6 +18,20 @@ from ...domain.entities.finding import Finding
 from .sarif_parser import SarifError, parse_sarif
 
 logger = logging.getLogger(__name__)
+
+
+def _entorno_utf8() -> dict:
+    """Fuerza UTF-8 en el proceso hijo.
+
+    El analizador es un programa Python y hereda la codificación de la consola.
+    En Windows esa codificación es cp1252 y su salida incluye emoji, de modo
+    que el proceso muere al escribirla con UnicodeEncodeError antes de llegar a
+    producir nada.
+    """
+    entorno = dict(os.environ)
+    entorno["PYTHONIOENCODING"] = "utf-8"
+    entorno["PYTHONUTF8"] = "1"
+    return entorno
 
 DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_CONFIG = "p/security-audit"
@@ -67,9 +82,11 @@ class SemgrepAnalyzer:
         proc = await asyncio.create_subprocess_exec(
             self.binary, "--version",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=_entorno_utf8(),
         )
         out, _ = await proc.communicate()
-        self._version = f"{self.config}@{out.decode().strip() or 'desconocida'}"
+        version = out.decode("utf-8", errors="replace").strip()
+        self._version = f"{self.config}@{version or 'desconocida'}"
         return self._version
 
     async def analyze(self, repository_path: str) -> list[Finding]:
@@ -99,6 +116,7 @@ class SemgrepAnalyzer:
                     *args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=_entorno_utf8(),
                 )
                 try:
                     _, err = await asyncio.wait_for(
@@ -115,7 +133,7 @@ class SemgrepAnalyzer:
                 if proc.returncode not in (0, 1):
                     raise AnalysisFailed(
                         f"El analizador terminó con código {proc.returncode}: "
-                        f"{err.decode(errors='replace')[:300]}"
+                        f"{err.decode('utf-8', errors='replace')[:300]}"
                     )
                 if not salida.exists():
                     raise AnalysisFailed(
