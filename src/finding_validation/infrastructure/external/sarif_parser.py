@@ -76,6 +76,25 @@ def _rule_index(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {r.get("id"): r for r in rules if isinstance(r, dict) and r.get("id")}
 
 
+def normalize_uri(uri: str) -> str:
+    r"""Deja la ruta relativa a la raiz analizada.
+
+    El analizador emite la ruta tal como la recibio. Si se le paso un destino
+    relativo, como "..\..\corpus", la salida arrastra ese prefijo y al unirla
+    con la raiz del repositorio se sale de ella: el recuperador de contexto no
+    encuentra el archivo, no hay que enviar al modelo y la corrida termina con
+    cero consultas sin decir por que.
+
+    Se normalizan las barras y se descartan los segmentos de subida.
+    """
+    limpio = uri.replace("\\", "/")
+    limpio = limpio.removeprefix("file:///")
+    partes = [t for t in limpio.split("/") if t not in ("", ".")]
+    while partes and partes[0] == "..":
+        partes.pop(0)
+    return "/".join(partes)
+
+
 def _physical_location(result: dict[str, Any]) -> tuple[str, int, int] | None:
     locations = result.get("locations") or []
     if not locations:
@@ -94,7 +113,7 @@ def _physical_location(result: dict[str, Any]) -> tuple[str, int, int] | None:
     except (TypeError, ValueError):
         return None
     end_i = max(end_i, start_i)
-    return uri, start_i, end_i
+    return normalize_uri(uri), start_i, end_i
 
 
 def _snippet(result: dict[str, Any]) -> str:
