@@ -13,6 +13,7 @@ abrir la aplicación. Códigos de salida pensados para un paso de integración:
 
 import argparse
 import asyncio
+import random
 import sys
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -175,6 +176,50 @@ async def cmd_validate(args: argparse.Namespace) -> int:
     return 0 if not report.interrupted else 2
 
 
+def muestra_estratificada(findings: list, tamano: int, semilla: int) -> list:
+    """Reparte la muestra entre categorías, en proporción a su peso.
+
+    Cortar los primeros N daría un lote de una sola categoría, porque los
+    hallazgos llegan agrupados por ruta de archivo y las rutas agrupan por
+    categoría. La semilla deja el reparto reproducible: repetir la corrida con
+    la misma semilla produce el mismo lote.
+    """
+    from collections import defaultdict
+
+    etiquetados = [f for f in findings if f.has_known_truth]
+    if not tamano or tamano >= len(etiquetados):
+        return etiquetados
+
+    grupos = defaultdict(list)
+    for f in etiquetados:
+        grupos[f.cwe or "sin categoría"].append(f)
+
+    azar = random.Random(semilla)
+    for lista in grupos.values():
+        azar.shuffle(lista)
+
+    # Al menos uno de cada categoría, y el resto en proporción. Sin el mínimo,
+    # las categorías pequeñas desaparecerían de la muestra.
+    cuotas = {c: 1 for c in grupos}
+    resto = tamano - len(cuotas)
+    if resto > 0:
+        total = len(etiquetados)
+        for c, lista in grupos.items():
+            cuotas[c] += int(resto * len(lista) / total)
+
+    salida = []
+    for c, lista in grupos.items():
+        salida.extend(lista[: min(cuotas[c], len(lista))])
+
+    # El redondeo deja hueco: se completa con lo que sobre, sin repetir.
+    if len(salida) < tamano:
+        tomados = {id(f) for f in salida}
+        sobrantes = [f for f in etiquetados if id(f) not in tomados]
+        azar.shuffle(sobrantes)
+        salida.extend(sobrantes[: tamano - len(salida)])
+    return salida[:tamano]
+
+
 async def cmd_compare(args: argparse.Namespace) -> int:
     """Corre el mismo lote con varias clases de modelo y las contrasta.
 
@@ -192,9 +237,8 @@ async def cmd_compare(args: argparse.Namespace) -> int:
             print("ERROR: no existe esa ejecución", file=sys.stderr)
             return 2
 
-        findings = await SqlFindingRepository(s).list_by_execution(execution.id)
-        if args.batch_size:
-            findings = findings[: args.batch_size]
+        todos = await SqlFindingRepository(s).list_by_execution(execution.id)
+        findings = muestra_estratificada(todos, args.batch_size, args.seed)
         etiquetados = [f for f in findings if f.has_known_truth]
         if not etiquetados:
             print(
@@ -211,7 +255,13 @@ async def cmd_compare(args: argparse.Namespace) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
 
-        print(f"Lote de {len(findings)} hallazgos, {len(etiquetados)} con etiqueta")
+        from collections import Counter
+        reparto = Counter(f.cwe or "sin categoría" for f in findings)
+        print(f"Lote de {len(findings)} hallazgos con etiqueta, tomados de "
+              f"{len(todos)} ingeridos")
+        print("Reparto por categoría: " + ", ".join(
+            f"{c}={n}" for c, n in reparto.most_common()))
+        print(f"Semilla de muestreo: {args.seed}")
         print(f"Modelos: {', '.join(args.model)}")
         print(f"Repeticiones por modelo: {args.repetitions}\n")
 
@@ -224,7 +274,7 @@ async def cmd_compare(args: argparse.Namespace) -> int:
                 max_queries_per_model=args.max_queries,
                 usd_per_1k_input=settings.usd_per_1k_input,
                 usd_per_1k_output=settings.usd_per_1k_output,
-                batch_size=args.batch_size,
+                batch_size=None,
             )
 
     verdad = {f.id: f.known_truth for f in findings if f.has_known_truth}
@@ -367,7 +417,11 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--repetitions", type=int, default=1,
                    help="Corridas por modelo. Tres miden la estabilidad del veredicto")
     m.add_argument("--batch-size", type=int, default=None,
-                   help="Acota el lote. Conviene fijarlo: el costo crece con él")
+                   help="Tamaño de la muestra estratificada por categoría CWE. "
+                        "Conviene fijarlo: el costo crece con él")
+    m.add_argument("--seed", type=int, default=20260912,
+                   help="Semilla del muestreo. La misma semilla produce el mismo "
+                        "lote, condición para repetir la corrida")
     m.add_argument("--max-queries", type=int, default=1000,
                    help="Tope de consultas por modelo, como red de seguridad")
     m.add_argument("--out-dir",
