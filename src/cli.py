@@ -325,6 +325,7 @@ def _scorecard(comparacion, verdad: dict) -> list[dict]:
             "anclaje_primera": round(run.anchor_rate, 4),
             "reintentos": run.retries,
             "no_verificables": run.not_verifiable,
+            "fallos": run.failures,
             "consultas": run.queries,
             "usd": round(run.usd, 4),
             **matriz.report(),

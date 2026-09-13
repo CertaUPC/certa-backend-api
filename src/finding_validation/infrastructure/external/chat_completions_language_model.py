@@ -61,9 +61,29 @@ class ProviderRefused(RuntimeError):
     """Fallo permanente del proveedor: credencial, cuota o petición inválida."""
 
 
-def _extract_json(raw: str) -> dict:
+class ProviderEmptyResponse(RuntimeError):
+    """El proveedor respondió sin contenido.
+
+    No es lo mismo que un contrato incumplido. Un modelo que devuelve JSON
+    malformado seguirá devolviéndolo, de modo que reintentar solo gasta; una
+    respuesta vacía viene de un fallo del proveedor en esa llamada concreta y
+    la siguiente suele resolverla. Por eso lleva su propia clase y se trata
+    como transitoria.
+    """
+
+
+def _extract_json(raw: str | None) -> dict:
     """Saca el objeto aunque venga envuelto en texto o en vallas. Recorta lo de
     alrededor; no completa campos ni corrige valores."""
+    if not isinstance(raw, str) or not raw.strip():
+        # Algunos proveedores devuelven contenido nulo: el modelo se quedó sin
+        # espacio, filtró la respuesta o contestó solo con su razonamiento
+        # interno. Es un incumplimiento del contrato, no un fallo del programa:
+        # tratarlo como excepción de atributo mataba el lote entero y con él
+        # todo lo ya pagado.
+        raise ProviderEmptyResponse(
+            "El proveedor no devolvió contenido en la respuesta"
+        )
     texto = raw.strip()
     if texto.startswith("```"):
         texto = texto.strip("`")
@@ -211,7 +231,19 @@ class ChatCompletionsLanguageModel:
                 )
 
             cuerpo = response.json()
-            contenido = cuerpo["choices"][0]["message"]["content"]
+            opciones = cuerpo.get("choices") or []
+            if not opciones:
+                raise ProviderEmptyResponse(
+                    "La respuesta del proveedor no trae ninguna opción"
+                )
+            mensaje = opciones[0].get("message") or {}
+            contenido = mensaje.get("content")
+            if not contenido:
+                motivo = opciones[0].get("finish_reason") or "sin motivo declarado"
+                logger.warning(
+                    "Contenido vacío del modelo %s, motivo declarado: %s",
+                    self.model, motivo,
+                )
             uso = cuerpo.get("usage") or {}
             return parse_judgement(
                 contenido,
@@ -225,6 +257,8 @@ class ChatCompletionsLanguageModel:
                 return False
             if isinstance(exc, httpx.HTTPStatusError):
                 return exc.response.status_code in TRANSIENT_STATUS
+            if isinstance(exc, ProviderEmptyResponse):
+                return True
             return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
 
         return await with_backoff(_call, self.backoff, _is_transient)

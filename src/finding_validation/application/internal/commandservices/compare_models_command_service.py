@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from .....shared.rate_limiter import ProviderUnavailable
 from .....shared.tracing import Stage, correlate, emit
 from ....domain.entities.execution import Execution
 from ....domain.entities.verdict import VerdictValue
@@ -25,6 +26,10 @@ from ....domain.services.code_reader_port import CodeReaderPort
 from ....domain.services.deterministic_prefilter import DeterministicPrefilter
 from ....domain.services.language_model_port import LanguageModelPort
 from ....domain.value_objects.prompt_version import PromptVersion
+from ....infrastructure.external.chat_completions_language_model import (
+    ModelContractViolation,
+    ProviderRefused,
+)
 from .validate_finding_command_service import ValidateFindingCommandService
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ class ModelRun:
     anchored_first_try: int = 0
     retries: int = 0
     not_verifiable: int = 0
+    failures: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     usd: float = 0.0
@@ -110,6 +116,7 @@ class Comparison:
                     "anclaje_primera": round(r.anchor_rate, 4),
                     "reintentos": r.retries,
                     "no_verificables": r.not_verifiable,
+                    "fallos": r.failures,
                     "consultas": r.queries,
                     "usd": round(r.usd, 2),
                 }
@@ -186,8 +193,21 @@ class CompareModelsCommandService:
                 )
 
                 for finding in findings:
-                    with correlate():
-                        outcome = await validator.execute(finding, repetition=rep)
+                    try:
+                        with correlate():
+                            outcome = await validator.execute(finding, repetition=rep)
+                    except (ProviderUnavailable, ProviderRefused,
+                            ModelContractViolation) as exc:
+                        # Un hallazgo que el proveedor no resuelve no puede
+                        # llevarse por delante el lote entero: en una corrida de
+                        # cientos de consultas, fallar en la mitad tiraría todo
+                        # lo ya pagado. Se cuenta y se sigue.
+                        run.failures += 1
+                        logger.warning(
+                            "El modelo %s no resolvió el hallazgo %s: %s",
+                            model.model_name, finding.id, exc,
+                        )
+                        continue
                     if not outcome.succeeded or outcome.verdict is None:
                         continue
                     v = outcome.verdict
