@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     llm_model_version: str = ""
     llm_temperature: float = 0.0
     llm_timeout_seconds: int = 120
+    # Paquete de certificados con el que verificar al proveedor. Hace falta en
+    # redes o antivirus que interceptan TLS, donde el almacén por omisión no
+    # incluye la autoridad que firma la conexión.
+    ssl_cert_file: str = ""
     llm_queries_per_minute: int = 60
 
     # -- presupuesto ------------------------------------------------------

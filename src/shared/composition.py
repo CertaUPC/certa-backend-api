@@ -105,6 +105,7 @@ class Container:
             temperature=self.settings.llm_temperature,
             timeout_seconds=self.settings.llm_timeout_seconds,
             queries_per_minute=self.settings.llm_queries_per_minute,
+            ca_bundle=self.settings.ssl_cert_file,
         )
 
     def new_budget(self) -> BudgetGuard:
@@ -150,6 +151,7 @@ class Container:
             temperature=self.settings.llm_temperature,
             timeout_seconds=self.settings.llm_timeout_seconds,
             queries_per_minute=self.settings.llm_queries_per_minute,
+            ca_bundle=self.settings.ssl_cert_file,
         )
 
     def comparator(self, session: AsyncSession) -> CompareModelsCommandService:
