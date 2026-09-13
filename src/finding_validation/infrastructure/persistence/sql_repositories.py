@@ -7,7 +7,7 @@ lleva lógica.
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....shared.database import (
@@ -328,6 +328,23 @@ class SqlVerdictRepository:
         )
 
     async def save(self, verdict: Verdict, prompt_version: str | None = None) -> None:
+        """Guarda el veredicto, reemplazando el que hubiera para esa corrida.
+
+        La clave es hallazgo, modelo, versión y repetición. Sin reemplazo, una
+        corrida que muere a la mitad deja la medición bloqueada: repetirla choca
+        contra los veredictos ya escritos y no hay manera de terminarla sin
+        borrar a mano. Reemplazar deja el procedimiento repetible, que es
+        condición declarada del anexo, y hace que valga siempre el último
+        veredicto obtenido con esos mismos parámetros.
+        """
+        await self._session.execute(
+            delete(VerdictRow).where(
+                VerdictRow.finding_id == str(verdict.finding_id),
+                VerdictRow.model == verdict.model,
+                VerdictRow.model_version == verdict.model_version,
+                VerdictRow.repetition == verdict.repetition,
+            )
+        )
         self._session.add(
             VerdictRow(
                 id=str(verdict.id),

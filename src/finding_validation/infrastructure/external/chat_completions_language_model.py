@@ -7,6 +7,7 @@ locales de pesos abiertos, así que cambiar de proveedor es cambiar
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -20,6 +21,29 @@ from ...domain.services.language_model_port import ModelJudgement
 from . import prompt_builder
 
 logger = logging.getLogger(__name__)
+
+
+def _verificacion_tls(ruta: str = ""):
+    """Certificado con el que verificar al proveedor.
+
+    httpx valida contra el almacen de certifi, que no incluye las autoridades
+    que instalan los antivirus y las redes corporativas cuando interceptan TLS.
+    En esas maquinas toda llamada al proveedor falla con
+    CERTIFICATE_VERIFY_FAILED, el reintento la toma por transitoria y el lote
+    muere tras agotar los intentos sin decir cual es la causa.
+
+    Se admite un paquete propio por entorno. Devolver True mantiene el
+    comportamiento habitual donde no hay interceptacion.
+    """
+    ruta = ruta or os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+    if ruta and os.path.isfile(ruta):
+        return ruta
+    if ruta:
+        logger.warning(
+            "El certificado indicado no existe: %s. Se usa la verificación "
+            "por omisión.", ruta,
+        )
+    return True
 
 # Saturación y fallos de servidor. Un 401 o un 400 no: gastar cuatro intentos en
 # una clave inválida solo retrasa el diagnóstico.
@@ -115,6 +139,7 @@ class ChatCompletionsLanguageModel:
     temperature: float = 0.0
     timeout_seconds: int = 120
     queries_per_minute: int = 60
+    ca_bundle: str = ""
     backoff: BackoffPolicy = field(default_factory=BackoffPolicy)
     _limiter: RateLimiter = field(init=False, repr=False)
 
@@ -163,7 +188,10 @@ class ChatCompletionsLanguageModel:
             self._limiter.record(time.monotonic())
 
             inicio = time.perf_counter()
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                verify=_verificacion_tls(self.ca_bundle),
+            ) as client:
                 response = await client.post(
                     f"{self.base_url.rstrip('/')}/chat/completions",
                     headers={
