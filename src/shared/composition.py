@@ -106,6 +106,7 @@ class Container:
             timeout_seconds=self.settings.llm_timeout_seconds,
             queries_per_minute=self.settings.llm_queries_per_minute,
             ca_bundle=self.settings.ssl_cert_file,
+            max_output_tokens=self.settings.llm_max_output_tokens,
         )
 
     def new_budget(self) -> BudgetGuard:
@@ -152,6 +153,7 @@ class Container:
             timeout_seconds=self.settings.llm_timeout_seconds,
             queries_per_minute=self.settings.llm_queries_per_minute,
             ca_bundle=self.settings.ssl_cert_file,
+            max_output_tokens=self.settings.llm_max_output_tokens,
         )
 
     def comparator(self, session: AsyncSession) -> CompareModelsCommandService:
