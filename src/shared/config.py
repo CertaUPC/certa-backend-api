@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     # Tope de tokens de la respuesta. El contrato de salida son unos cientos;
     # sin tope, la pasarela reserva crédito por el máximo del modelo, que llega
     # a 65 536, y rechaza la petición con 402 aunque el saldo sobre de largo.
-    llm_max_output_tokens: int = 2000
+    # Los modelos que razonan gastan parte del tope en su razonamiento: con 2 000
+    # truncaban una de cada nueve respuestas y el contenido llegaba vacío.
+    llm_max_output_tokens: int = 4000
     # Paquete de certificados con el que verificar al proveedor. Hace falta en
     # redes o antivirus que interceptan TLS, donde el almacén por omisión no
     # incluye la autoridad que firma la conexión.
