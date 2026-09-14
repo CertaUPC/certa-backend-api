@@ -160,6 +160,7 @@ class ChatCompletionsLanguageModel:
     timeout_seconds: int = 120
     queries_per_minute: int = 60
     ca_bundle: str = ""
+    max_output_tokens: int = 2000
     backoff: BackoffPolicy = field(default_factory=BackoffPolicy)
     _limiter: RateLimiter = field(init=False, repr=False)
 
@@ -197,6 +198,11 @@ class ChatCompletionsLanguageModel:
                 },
             ],
             "response_format": {"type": "json_object"},
+            # Sin tope, la pasarela reserva crédito por el máximo del modelo y
+            # rechaza la petición con 402 aunque el saldo sobre. El contrato de
+            # salida ocupa unos cientos de tokens, de modo que el tope no
+            # recorta nada legítimo.
+            "max_tokens": self.max_output_tokens,
         }
 
         async def _call() -> ModelJudgement:

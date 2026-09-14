@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     llm_model_version: str = ""
     llm_temperature: float = 0.0
     llm_timeout_seconds: int = 120
+    # Tope de tokens de la respuesta. El contrato de salida son unos cientos;
+    # sin tope, la pasarela reserva crédito por el máximo del modelo, que llega
+    # a 65 536, y rechaza la petición con 402 aunque el saldo sobre de largo.
+    llm_max_output_tokens: int = 2000
     # Paquete de certificados con el que verificar al proveedor. Hace falta en
     # redes o antivirus que interceptan TLS, donde el almacén por omisión no
     # incluye la autoridad que firma la conexión.
