@@ -262,6 +262,8 @@ async def cmd_compare(args: argparse.Namespace) -> int:
         print("Reparto por categoría: " + ", ".join(
             f"{c}={n}" for c, n in reparto.most_common()))
         print(f"Semilla de muestreo: {args.seed}")
+        if args.resume:
+            print("Reanudando: los veredictos ya obtenidos no se vuelven a pagar")
         print(f"Modelos: {', '.join(args.model)}")
         print(f"Repeticiones por modelo: {args.repetitions}\n")
 
@@ -275,6 +277,7 @@ async def cmd_compare(args: argparse.Namespace) -> int:
                 usd_per_1k_input=settings.usd_per_1k_input,
                 usd_per_1k_output=settings.usd_per_1k_output,
                 batch_size=None,
+                resume=args.resume,
             )
 
     verdad = {f.id: f.known_truth for f in findings if f.has_known_truth}
@@ -326,6 +329,7 @@ def _scorecard(comparacion, verdad: dict) -> list[dict]:
             "reintentos": run.retries,
             "no_verificables": run.not_verifiable,
             "fallos": run.failures,
+            "reutilizados": run.reused,
             "consultas": run.queries,
             "usd": round(run.usd, 4),
             **matriz.report(),
@@ -420,6 +424,10 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--batch-size", type=int, default=None,
                    help="Tamaño de la muestra estratificada por categoría CWE. "
                         "Conviene fijarlo: el costo crece con él")
+    m.add_argument("--resume", action="store_true",
+                   help="Reutiliza los veredictos ya obtenidos para esta misma "
+                        "combinación de modelo, versión y repetición. Permite "
+                        "retomar una corrida interrumpida sin volver a pagarla")
     m.add_argument("--seed", type=int, default=20260912,
                    help="Semilla del muestreo. La misma semilla produce el mismo "
                         "lote, condición para repetir la corrida")

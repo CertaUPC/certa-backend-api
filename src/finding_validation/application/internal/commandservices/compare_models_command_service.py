@@ -47,6 +47,7 @@ class ModelRun:
     retries: int = 0
     not_verifiable: int = 0
     failures: int = 0
+    reused: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     usd: float = 0.0
@@ -117,6 +118,7 @@ class Comparison:
                     "reintentos": r.retries,
                     "no_verificables": r.not_verifiable,
                     "fallos": r.failures,
+                    "reutilizados": r.reused,
                     "consultas": r.queries,
                     "usd": round(r.usd, 2),
                 }
@@ -151,6 +153,7 @@ class CompareModelsCommandService:
         usd_per_1k_input: float = 0.0,
         usd_per_1k_output: float = 0.0,
         batch_size: int | None = None,
+        resume: bool = False,
     ) -> Comparison:
         if len(models) < 2:
             raise ValueError(
@@ -193,6 +196,18 @@ class CompareModelsCommandService:
                 )
 
                 for finding in findings:
+                    if resume:
+                        previo = await self._verdicts.get_for_run(
+                            finding.id, model.model_name, model.model_version, rep
+                        )
+                        if previo is not None:
+                            run.verdicts[finding.id] = previo.value
+                            if previo.anchor_verified and previo.attempts == 1:
+                                run.anchored_first_try += 1
+                            if previo.value is VerdictValue.NOT_VERIFIABLE:
+                                run.not_verifiable += 1
+                            run.reused += 1
+                            continue
                     try:
                         with correlate():
                             outcome = await validator.execute(finding, repetition=rep)

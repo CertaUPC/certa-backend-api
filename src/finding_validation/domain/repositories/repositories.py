@@ -58,6 +58,12 @@ class VerdictRepository(Protocol):
 
     async def get_by_finding(self, finding_id: UUID) -> list[Verdict]: ...
 
+    async def get_for_run(
+        self, finding_id: UUID, model: str, model_version: str, repetition: int
+    ) -> Verdict | None:
+        """El veredicto de esa corrida exacta, si ya se obtuvo."""
+        ...
+
     async def find_reusable(
         self, fingerprint: Fingerprint, model: str, model_version: str
     ) -> Verdict | None:

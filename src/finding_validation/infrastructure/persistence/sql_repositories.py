@@ -378,6 +378,27 @@ class SqlVerdictRepository:
         ).scalars()
         return [self._to_entity(r) for r in rows]
 
+    async def get_for_run(
+        self, finding_id: UUID, model: str, model_version: str, repetition: int
+    ) -> Verdict | None:
+        """El veredicto de esa corrida exacta, si ya se obtuvo.
+
+        Sirve para reanudar una comparación interrumpida sin volver a pagar lo
+        ya medido. Las cuatro condiciones son necesarias: cambiar cualquiera
+        describe una corrida distinta.
+        """
+        row = (
+            await self._session.execute(
+                select(VerdictRow).where(
+                    VerdictRow.finding_id == str(finding_id),
+                    VerdictRow.model == model,
+                    VerdictRow.model_version == model_version,
+                    VerdictRow.repetition == repetition,
+                )
+            )
+        ).scalar_one_or_none()
+        return self._to_entity(row) if row else None
+
     async def find_reusable(
         self, fingerprint: Fingerprint, model: str, model_version: str
     ) -> Verdict | None:
