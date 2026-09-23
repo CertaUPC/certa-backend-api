@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .experimentation.interfaces.rest.experiment_router import (
     router as experiment_router,
 )
-from .finding_validation.interfaces.rest.auth_router import router as auth_router
+from .iam.interfaces.rest.auth_router import router as auth_router
 from .finding_validation.interfaces.rest.executions_router import (
     router as executions_router,
 )

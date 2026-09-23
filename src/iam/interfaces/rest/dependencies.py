@@ -1,33 +1,40 @@
-"""Dependencias compartidas por los routers."""
+"""Quién llama, resuelto a partir del token.
 
-from collections.abc import AsyncIterator
+Es lo que el contexto de acceso ofrece a los demás: los enrutadores de
+validación y de experimentación dependen de esto para saber con qué rol se
+opera, y no al revés. Antes vivía dentro de validación, de modo que la
+dependencia iba en la dirección equivocada.
+"""
+
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....shared.composition import Container
-from ....shared.security import InvalidToken, decode_token
+from ....shared.rest import ContainerDep
+from ...infrastructure.security import InvalidToken, decode_token
 
 _bearer = HTTPBearer(auto_error=False)
-
-
-def get_container(request: Request) -> Container:
-    return request.app.state.container
-
-
-async def get_session(
-    container: Annotated[Container, Depends(get_container)],
-) -> AsyncIterator[AsyncSession]:
-    async with container.sessions() as session:
-        yield session
 
 
 class CurrentUser:
     def __init__(self, subject: str, role: str) -> None:
         self.subject = subject
         self.role = role
+
+    @property
+    def user_id(self) -> UUID | None:
+        """El sujeto del token, que es el identificador de la cuenta.
+
+        Devuelve None si no se puede leer en lugar de reventar: un token
+        antiguo o emitido por una herramienta no debe impedir la operacion,
+        solo deja la ejecucion sin autor declarado.
+        """
+        try:
+            return UUID(self.subject)
+        except (ValueError, AttributeError, TypeError):
+            return None
 
     def require(self, *roles: str) -> None:
         if roles and self.role not in roles:
@@ -41,7 +48,7 @@ class CurrentUser:
 
 
 async def current_user(
-    container: Annotated[Container, Depends(get_container)],
+    container: ContainerDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> CurrentUser:
     if credentials is None:
@@ -65,6 +72,4 @@ async def current_user(
     return CurrentUser(payload.get("sub", ""), payload.get("role", "desarrollador"))
 
 
-ContainerDep = Annotated[Container, Depends(get_container)]
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 UserDep = Annotated[CurrentUser, Depends(current_user)]

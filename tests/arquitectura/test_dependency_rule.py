@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[2] / "src"
-CONTEXTS = ("finding_validation", "experimentation")
+CONTEXTS = ("finding_validation", "experimentation", "iam")
 
 FORBIDDEN_IN_DOMAIN = ("infrastructure", "interfaces", "application")
 FORBIDDEN_LIBRARIES = (

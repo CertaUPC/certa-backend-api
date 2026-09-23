@@ -5,10 +5,10 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from ....shared.database_experiment import UserRow
-from ....shared.security import hash_password, issue_token, verify_password
+from ....shared.rest import ContainerDep, SessionDep
+from ...infrastructure.persistence.models import UserRow
+from ...infrastructure.security import hash_password, issue_token, verify_password
 from ..schemas.schemas import LoginRequest, TokenResponse
-from .dependencies import ContainerDep, SessionDep
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Acceso"])
 

@@ -60,7 +60,9 @@ class Container:
         self.prefilter = DeterministicPrefilter()
         self.priority_calculator = PriorityCalculator()
         self.code_reader = CodeReaderRegistry(
-            Path(settings.repository_root), settings.max_context_lines
+            Path(settings.repository_root),
+            settings.max_context_lines,
+            settings.callee_depth,
         )
         self.prompt_version = CURRENT_VERSION
 
