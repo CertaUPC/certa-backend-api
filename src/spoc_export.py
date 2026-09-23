@@ -64,22 +64,29 @@ def write_scorecard(destino: Path, filas: list[dict]) -> None:
 
 
 def write_verdicts(destino: Path, verdicts: list, findings: list) -> None:
-    """Una fila por veredicto, con el hallazgo al que corresponde."""
+    """Una fila por veredicto del lote, con el hallazgo al que corresponde.
+
+    Se descartan los veredictos de hallazgos ajenos al lote. La ejecución
+    acumula los de corridas anteriores, y volcarlos aquí daría por resultado de
+    esta corrida lo que se midió en otra, quizá con otra configuración.
+    """
     indice = {f.id: f for f in findings}
     with destino.open("w", encoding="utf-8", newline="") as archivo:
         escritor = csv.writer(archivo)
         escritor.writerow(VERDICT_COLUMNS)
         for v in verdicts:
             f = indice.get(v.finding_id)
+            if f is None:
+                continue
             escritor.writerow([
                 str(v.finding_id),
-                f.rule_id if f else "",
-                f.cwe if f else "",
-                f.severity if f else "",
-                f.location.file_path if f else "",
-                f.location.start_line if f else "",
-                f.fingerprint.value if f else "",
-                "" if not f or f.known_truth is None else int(f.known_truth),
+                f.rule_id,
+                f.cwe,
+                f.severity,
+                f.location.file_path,
+                f.location.start_line,
+                f.fingerprint.value,
+                "" if f.known_truth is None else int(f.known_truth),
                 v.model,
                 v.model_version,
                 v.repetition,
@@ -117,6 +124,7 @@ def build_manifest(contexto: RunContext, filas: list[dict], acuerdo: float) -> d
             "temperatura": ajustes.llm_temperature,
             "lineas_maximas_de_contexto": ajustes.max_context_lines,
             "profundidad_de_llamadores": ajustes.caller_depth,
+            "profundidad_de_llamados": ajustes.callee_depth,
         },
         "modelos": {
             "anfitrion": urlsplit(ajustes.llm_base_url).netloc or "no declarado",

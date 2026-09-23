@@ -33,6 +33,7 @@ class FakeSettings:
     llm_temperature: float = 0.0
     max_context_lines: int = 250
     caller_depth: int = 2
+    callee_depth: int = 2
 
 
 def hallazgo(nombre: str, verdad: bool | None) -> Finding:
@@ -121,6 +122,47 @@ class TestExport:
         destino = tmp_path / "aun" / "no" / "existe"
         export(destino, contexto, FILAS, [], acuerdo=0.9)
         assert destino.is_dir()
+
+    def test_verdicts_from_outside_the_batch_are_left_out(self, contexto, tmp_path):
+        """El detalle describe el lote, no todo lo que haya en la base.
+
+        La ejecución acumula veredictos de corridas anteriores sobre otros
+        hallazgos. Volcarlos aquí llenaría el archivo de filas sin regla ni
+        categoría, y daría por resultado de esta corrida lo que se midió en
+        otra, quizá con otra configuración.
+        """
+        from dataclasses import dataclass as dc
+        from dataclasses import field as fld
+
+        @dc
+        class FakeJustification:
+            cited_lines: tuple = (12,)
+
+        @dc
+        class FakeValue:
+            value: str = "explotable"
+
+        @dc
+        class FakeVerdict:
+            finding_id: object
+            model: str = "m"
+            model_version: str = "v"
+            repetition: int = 1
+            value: object = fld(default_factory=FakeValue)
+            confidence: float = 0.9
+            anchor_verified: bool = True
+            attempts: int = 1
+            justification: object = fld(default_factory=FakeJustification)
+            was_reused: bool = False
+            latency_ms: int = 30
+
+        del_lote = FakeVerdict(finding_id=contexto.findings[0].id)
+        ajeno = FakeVerdict(finding_id=uuid4())
+        destino = tmp_path / "spoc"
+        export(destino, contexto, FILAS, [del_lote, ajeno], acuerdo=0.9)
+        filas = (destino / "verdicts.csv").read_text(encoding="utf-8").strip().splitlines()
+        assert len(filas) == 2, "encabezado y un solo veredicto, el del lote"
+        assert str(ajeno.finding_id) not in "\n".join(filas)
 
     def test_empty_verdicts_still_write_the_header(self, contexto, tmp_path):
         """Un archivo con solo encabezado se lee; uno vacío confunde."""

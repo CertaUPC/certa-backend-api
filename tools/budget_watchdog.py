@@ -29,17 +29,43 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.shared.config import get_settings
 
 
-def saldo(ajustes) -> tuple[float, float]:
-    """Devuelve saldo restante y consumo total, en dólares."""
+def _consulta(ajustes, recurso: str) -> dict:
     r = httpx.get(
-        ajustes.llm_base_url.rstrip("/").replace("/api/v1", "/api/v1") + "/credits",
+        ajustes.llm_base_url.rstrip("/") + recurso,
         headers={"Authorization": f"Bearer {ajustes.llm_api_key}"},
         timeout=30,
         verify=ajustes.ssl_cert_file or True,
     )
     r.raise_for_status()
-    d = r.json()["data"]
-    return d["total_credits"] - d["total_usage"], d["total_usage"]
+    return r.json()["data"]
+
+
+def saldo(ajustes) -> tuple[float, float]:
+    """Lo que de verdad se puede gastar, y lo consumido, en dólares.
+
+    Son dos topes distintos y manda el menor. La cuenta tiene un saldo, y la
+    clave puede llevar encima un límite propio de gasto. Mirar solo el saldo
+    deja ciego al vigilante justo cuando el límite de la clave es el que aprieta:
+    en la corrida del 14 de setiembre la cuenta marcaba diez dólares sin moverse
+    mientras el proveedor rechazaba cada consulta por falta de crédito, y el
+    vigilante informó normalidad durante todo ese tiempo.
+    """
+    creditos = _consulta(ajustes, "/credits")
+    de_la_cuenta = creditos["total_credits"] - creditos["total_usage"]
+    usado = creditos["total_usage"]
+
+    try:
+        clave = _consulta(ajustes, "/key")
+    except (httpx.HTTPError, KeyError):
+        # Un proveedor que no expone el dato de la clave no invalida la
+        # vigilancia: se sigue con el saldo, que es la otra mitad.
+        return de_la_cuenta, usado
+
+    tope = clave.get("limit")
+    if tope is None:
+        return de_la_cuenta, usado
+    de_la_clave = tope - clave.get("usage", 0.0)
+    return min(de_la_cuenta, de_la_clave), usado
 
 
 def main() -> int:

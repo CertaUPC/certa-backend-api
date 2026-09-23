@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 
 TINTA = "#1f2933"
 BARRAS = ["#3d5a80", "#98c1d9", "#ee6c4d", "#c8d8e4"]
+COBERTURA = "#8d99ae"
 CRITERIO_F1 = 0.75        # declarado en el protocolo de validación
 CRITERIO_ANCLAJE = 0.85
 
@@ -71,24 +72,41 @@ def promedio_por_modelo(filas: list[dict], campo: str) -> dict[str, float]:
 
 
 def fig_desempeno(filas: list[dict], dest: Path) -> Path:
+    """Las tres metricas de acierto, y junto a ellas la cobertura.
+
+    Las tres primeras se calculan solo sobre los hallazgos en que el modelo se
+    pronuncio. Leidas sin la cobertura premiarian al modelo que solo opina sobre
+    lo facil, de modo que la cuarta barra no es un adorno: sin ella el grafico
+    afirma mas de lo que los datos sostienen.
+    """
     modelos = list(dict.fromkeys(f["modelo"] for f in filas))
-    metricas = [("f1", "F1"), ("precision", "Precisión"), ("exhaustividad", "Exhaustividad")]
-    fig, ax = plt.subplots(figsize=(7.2, 4.0), dpi=200)
-    ancho = 0.26
+    metricas = [("f1", "F1"), ("precision", "Precisión"),
+                ("exhaustividad", "Exhaustividad"), ("cobertura", "Cobertura")]
+    fig, ax = plt.subplots(figsize=(7.8, 4.0), dpi=200)
+    ancho = 0.20
     for i, (campo, etiqueta) in enumerate(metricas):
         medias = promedio_por_modelo(filas, campo)
         x = [j + i * ancho for j in range(len(modelos))]
         alturas = [medias[m] for m in modelos]
-        barras = ax.bar(x, alturas, ancho, label=etiqueta, color=BARRAS[i])
+        # La cobertura mide otra cosa que las tres anteriores: no cuanto
+        # acierta el modelo, sino sobre cuanto se atreve a opinar. Se pinta
+        # aparte para que no se lea como una metrica de acierto mas.
+        color = COBERTURA if campo == "cobertura" else BARRAS[i]
+        barras = ax.bar(x, alturas, ancho, label=etiqueta, color=color)
         ax.bar_label(barras, fmt="%.2f", fontsize=7, color=TINTA, padding=2)
     ax.axhline(CRITERIO_F1, color="#ee6c4d", linestyle="--", linewidth=1)
-    ax.text(len(modelos) - 0.45, CRITERIO_F1 + 0.015,
-            f"criterio F1 = {CRITERIO_F1}", fontsize=7, color="#ee6c4d")
-    ax.set_xticks([j + ancho for j in range(len(modelos))])
+    # A la izquierda y por debajo de la linea: a la derecha se montaba sobre la
+    # ultima barra del grupo.
+    ax.text(-0.42, CRITERIO_F1 - 0.055, f"criterio F1 = {CRITERIO_F1}",
+            fontsize=7, color="#ee6c4d")
+    ax.set_xticks([j + ancho * 1.5 for j in range(len(modelos))])
     ax.set_xticklabels([corto(m) for m in modelos])
-    ax.set_ylim(0, 1.08)
+    # Holgura para que la leyenda no pise las cifras sobre las barras.
+    ax.set_ylim(0, 1.30)
     base(ax, "Desempeño de cada clase de modelo frente a la verdad conocida")
-    ax.legend(frameon=False, fontsize=8, ncols=3, loc="upper left")
+    # Dentro del area, en la holgura que deja el techo de 1,30. Fuera se
+    # montaba sobre el titulo.
+    ax.legend(frameon=False, fontsize=8, ncols=4, loc="upper left")
     return guardar(fig, dest / "spoc_desempeno.png")
 
 
