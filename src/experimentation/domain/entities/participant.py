@@ -15,6 +15,9 @@ class Participant:
     years_of_experience: int
     consented_at: datetime
     has_security_role: bool = False
+    # Participa en la sesión piloto. Sus datos no entran en el análisis ni
+    # en el historial que equilibra el orden de condiciones.
+    is_pilot: bool = False
     id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:

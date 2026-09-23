@@ -27,6 +27,12 @@ from src.finding_validation.infrastructure.persistence.sql_repositories import (
 )
 from src.shared.database import Base, ProjectRow, normalize_database_url
 
+# Registra la tabla de cuentas, que executions referencia por clave
+# foránea. Sin esto el archivo pasa dentro de la suite, porque otro
+# módulo la importa, y falla al correrlo solo.
+import src.iam.infrastructure.persistence.models  # noqa: F401
+import src.shared.database_experiment  # noqa: F401  (registra sus tablas)
+
 PROJECT_ID = uuid4()
 
 
@@ -337,3 +343,122 @@ class TestNormalizacionDeLaCadena:
         url, args = normalize_database_url("sqlite+aiosqlite:///./certa.db")
         assert url == "sqlite+aiosqlite:///./certa.db"
         assert args == {}
+
+
+class TestContextRoundTrip:
+    """El contexto guardado tiene que volver entero.
+
+    Los métodos llamados son lo que lleva al modelo hasta donde vive el
+    saneamiento. Si se guardan a medias, el contexto que se recupera después
+    para auditar un veredicto no es el que se envió, y la verificación de
+    anclaje deja de ser comprobable sobre lo que de verdad ocurrió.
+    """
+
+    async def test_callees_survive_the_round_trip(self, session):
+        ejecucion = Execution(project_id=PROJECT_ID, tool_name="semgrep",
+                              ruleset_version="1.90.0")
+        await SqlExecutionRepository(session).save(ejecucion)
+        hallazgo = _finding()
+        await SqlFindingRepository(session).save_all([hallazgo], ejecucion.id)
+
+        repo = SqlCodeContextRepository(session)
+        await repo.save(CodeContext(
+            finding_id=hallazgo.id,
+            enclosing_function="doPost",
+            text="43: linea\n88: otra",
+            available_lines=frozenset({43, 88}),
+            callers=("doGet",),
+            callees=("doSomething", "sanear"),
+            sanitizers=("encodeForSQL",),
+            caller_depth=2,
+            callee_depth=2,
+        ))
+        vuelto = await repo.get_by_finding(hallazgo.id)
+        assert vuelto is not None
+        assert vuelto.callees == ("doSomething", "sanear")
+        assert vuelto.callee_depth == 2
+        assert vuelto.callers == ("doGet",)
+        assert vuelto.sanitizers == ("encodeForSQL",)
+
+
+class TestParticipanteDePiloto:
+    """El protocolo declara un piloto cuyos datos se excluyen del analisis.
+
+    Lo que esta clase protege no es la columna sino su consecuencia menos
+    visible: el orden de condiciones se asigna con el contrabalanceador sobre
+    el historial de sesiones, de modo que una sesion de piloto que contara
+    desviaria el reparto de los participantes reales sin que nada lo delatara.
+    """
+
+    @staticmethod
+    async def _registrar(session, codigo, piloto):
+        from src.experimentation.domain.entities.participant import Participant
+        from src.experimentation.domain.services.counterbalancer import (
+            Counterbalancer,
+        )
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlParticipantRepository,
+            SqlSessionRepository,
+        )
+        from datetime import datetime, timezone
+
+        participantes = SqlParticipantRepository(session)
+        sesiones = SqlSessionRepository(session)
+        p = Participant(
+            anonymous_code=codigo,
+            years_of_experience=3,
+            consented_at=datetime.now(timezone.utc),
+            is_pilot=piloto,
+        )
+        await participantes.save(p)
+        asignacion = Counterbalancer().assign(await sesiones.existing_orders())
+        await sesiones.create(p.id, asignacion)
+        return p, asignacion
+
+    async def test_la_marca_sobrevive_a_la_ida_y_vuelta(self, session):
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlParticipantRepository,
+        )
+
+        p, _ = await self._registrar(session, "PIL01", True)
+        vuelto = await SqlParticipantRepository(session).get_by_code("PIL01")
+        assert vuelto is not None
+        assert vuelto.is_pilot is True
+
+    async def test_por_omision_no_es_piloto(self, session):
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlParticipantRepository,
+        )
+
+        await self._registrar(session, "P01", False)
+        vuelto = await SqlParticipantRepository(session).get_by_code("P01")
+        assert vuelto is not None
+        assert vuelto.is_pilot is False
+
+    async def test_la_sesion_del_piloto_no_entra_en_el_historial(self, session):
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlSessionRepository,
+        )
+
+        await self._registrar(session, "PIL01", True)
+        await self._registrar(session, "PIL02", True)
+        historial = await SqlSessionRepository(session).existing_orders()
+        assert historial == []
+
+    async def test_el_piloto_no_desvia_el_orden_del_primer_participante(
+        self, session
+    ):
+        """Sin el filtro, el primero de la muestra recibiria el segundo orden
+        porque el piloto ya habria consumido el primero."""
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlSessionRepository,
+        )
+
+        _, del_piloto = await self._registrar(session, "PIL01", True)
+        _, del_primero = await self._registrar(session, "P01", False)
+        assert del_primero.order == del_piloto.order
+
+        _, del_segundo = await self._registrar(session, "P02", False)
+        assert del_segundo.order != del_primero.order
+        historial = await SqlSessionRepository(session).existing_orders()
+        assert len(historial) == 2
