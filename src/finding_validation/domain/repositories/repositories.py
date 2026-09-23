@@ -4,6 +4,7 @@ PostgreSQL, memoria o un archivo."""
 from typing import Protocol
 from uuid import UUID
 
+from ..entities.audit import Audit
 from ..entities.code_context import CodeContext
 from ..entities.execution import Execution
 from ..entities.finding import Finding
@@ -18,7 +19,9 @@ class ExecutionRepository(Protocol):
 
     async def get(self, execution_id: UUID) -> Execution | None: ...
 
-    async def claim_next_pending(self, worker: str) -> Execution | None:
+    async def claim_next_pending(
+        self, worker: str, project_id: UUID | None = None
+    ) -> Execution | None:
         """La pendiente más antigua, o None. Dos trabajadores nunca pueden
         reclamar la misma; cómo se consiga es cosa de la implementación."""
         ...
@@ -50,6 +53,18 @@ class CodeContextRepository(Protocol):
 
     async def purge_by_execution(self, execution_id: UUID) -> int:
         """Borra el texto y conserva las métricas. Devuelve cuántos purgó."""
+        ...
+
+
+class AuditRepository(Protocol):
+    """Las decisiones de auditoria del producto, sin instrumentacion de estudio."""
+
+    async def save(self, audit: Audit) -> None:
+        """Guarda la nueva y retira la vigencia de la anterior, si la habia."""
+        ...
+
+    async def list_by_finding(self, finding_id: UUID) -> list[Audit]:
+        """El historial completo, de la mas reciente a la mas antigua."""
         ...
 
 

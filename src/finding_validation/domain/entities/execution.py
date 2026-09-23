@@ -37,6 +37,10 @@ class Execution:
     finished_at: datetime | None = None
     failure_reason: str | None = None
     context_purged: bool = False
+    # Quién la lanzó. Opcional porque las ejecuciones anteriores a que se
+    # registrara el autor existen y no se les puede inventar uno, y porque la
+    # ingesta desde las herramientas de línea de órdenes no pasa por sesión.
+    created_by: UUID | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     id: UUID = field(default_factory=uuid4)
 
@@ -89,6 +93,10 @@ class Execution:
     @property
     def is_claimable(self) -> bool:
         return self.status is ExecutionStatus.PENDING
+
+    @property
+    def is_running(self) -> bool:
+        return self.status is ExecutionStatus.IN_PROGRESS
 
     @property
     def pending_findings(self) -> int:

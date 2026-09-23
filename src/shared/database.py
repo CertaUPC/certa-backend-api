@@ -78,6 +78,13 @@ class ExecutionRow(Base):
     raw_sarif: Mapped[dict | None] = mapped_column(VARIANT_JSON, nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # El autor de la ejecución. Se conserva aunque la cuenta desaparezca: la
+    # ejecución es un hecho que ocurrió, y borrarla al borrar al usuario
+    # destruiría el registro en lugar de anonimizarlo. De ahí SET NULL y no
+    # CASCADE.
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     context_purged: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -148,10 +155,16 @@ class ContextRow(Base):
     )
     enclosing_function: Mapped[str] = mapped_column(Text)
     callers: Mapped[list] = mapped_column(VARIANT_JSON, default=list)
+    # Los métodos a los que el contenedor delega el dato. Se guardan aparte de
+    # los llamadores porque responden a preguntas distintas: el llamador dice de
+    # dónde viene el dato y el llamado qué le hicieron antes del sumidero, que
+    # es lo que decide el veredicto.
+    callees: Mapped[list] = mapped_column(VARIANT_JSON, default=list)
     sanitizers: Mapped[list] = mapped_column(VARIANT_JSON, default=list)
     available_lines: Mapped[list] = mapped_column(VARIANT_JSON, default=list)
     source_expression: Mapped[str | None] = mapped_column(Text, nullable=True)
     caller_depth: Mapped[int] = mapped_column(Integer, default=2)
+    callee_depth: Mapped[int] = mapped_column(Integer, default=2)
     degraded_to_file: Mapped[bool] = mapped_column(Boolean, default=False)
     # El texto exacto enviado al modelo. Es contra esto que se verifica el
     # anclaje, y sin conservarlo la verificación no sería auditable después.
@@ -242,6 +255,45 @@ def normalize_database_url(url: str) -> tuple[str, dict]:
             conectar["statement_cache_size"] = 0
 
     return u.render_as_string(hide_password=False), conectar
+
+
+class AuditRow(Base):
+    """Decision de auditoria del producto.
+
+    Va aparte de `decisions`, que es del contexto de experimentacion: aquella
+    guarda la variable principal del estudio, con su participante y su
+    condicion asignada. Esta guarda quien reviso que y que resolvio, que es lo
+    que el producto necesita cuando el estudio ya no exista.
+
+    La clave foranea al usuario es SET NULL y no CASCADE por la misma razon que
+    en executions: la revision es un hecho que ocurrio, y borrar al usuario
+    debe anonimizar el registro, no destruirlo.
+    """
+
+    __tablename__ = "audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    finding_id: Mapped[str] = mapped_column(
+        ForeignKey("findings.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    value: Mapped[str] = mapped_column(String(20))
+    seconds: Mapped[float] = mapped_column(Float)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now
+    )
+
+    __table_args__ = (
+        Index("ix_audits_finding", "finding_id", "is_current"),
+        CheckConstraint("seconds > 0", name="ck_audits_seconds"),
+        CheckConstraint(
+            "value IN ('confirmado','descartado','dudoso')", name="ck_audits_value"
+        ),
+    )
 
 
 def create_engine(url: str, echo: bool = False) -> AsyncEngine:

@@ -11,11 +11,13 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....shared.database import (
+    AuditRow,
     ContextRow,
     ExecutionRow,
     FindingRow,
     VerdictRow,
 )
+from ...domain.entities.audit import Audit, AuditValue
 from ...domain.entities.code_context import CodeContext
 from ...domain.entities.execution import Execution, ExecutionStatus
 from ...domain.entities.finding import Finding
@@ -47,6 +49,7 @@ class SqlExecutionRepository:
             claimed_by=e.claimed_by,
             failure_reason=e.failure_reason,
             context_purged=e.context_purged,
+            created_by=str(e.created_by) if e.created_by else None,
             started_at=e.started_at,
             finished_at=e.finished_at,
             created_at=e.created_at,
@@ -66,6 +69,7 @@ class SqlExecutionRepository:
             claimed_by=r.claimed_by,
             failure_reason=r.failure_reason,
             context_purged=r.context_purged,
+            created_by=UUID(r.created_by) if r.created_by else None,
             started_at=r.started_at,
             finished_at=r.finished_at,
             created_at=r.created_at,
@@ -90,7 +94,9 @@ class SqlExecutionRepository:
         row = await self._session.get(ExecutionRow, str(execution_id))
         return self._to_entity(row) if row else None
 
-    async def claim_next_pending(self, worker: str) -> Execution | None:
+    async def claim_next_pending(
+        self, worker: str, project_id: UUID | None = None
+    ) -> Execution | None:
         """La pendiente más antigua, sin que otro trabajador la tome.
 
         En PostgreSQL, bloqueo de fila con SKIP LOCKED: los demás saltan la que
@@ -99,9 +105,18 @@ class SqlExecutionRepository:
         """
         dialect = self._session.bind.dialect.name if self._session.bind else ""
 
+        # El filtro por proyecto no es un lujo. El trabajador lee el codigo de
+        # SU disco, de modo que reclamar una ejecucion de otro repositorio la
+        # consume entera marcandolo todo como fallo, y el trabajador que si
+        # tenia ese codigo ya no la encuentra porque dejo de estar pendiente.
+        # Sin el filtro, una sola base solo puede servir a un repositorio.
+        condiciones = [ExecutionRow.status == ExecutionStatus.PENDING.value]
+        if project_id is not None:
+            condiciones.append(ExecutionRow.project_id == str(project_id))
+
         stmt = (
             select(ExecutionRow)
-            .where(ExecutionRow.status == ExecutionStatus.PENDING.value)
+            .where(*condiciones)
             .order_by(ExecutionRow.created_at)
             .limit(1)
         )
@@ -245,10 +260,12 @@ class SqlCodeContextRepository:
                 finding_id=str(context.finding_id),
                 enclosing_function=context.enclosing_function,
                 callers=list(context.callers),
+                callees=list(context.callees),
                 sanitizers=list(context.sanitizers),
                 available_lines=sorted(context.available_lines),
                 source_expression=context.source_expression,
                 caller_depth=context.caller_depth,
+                callee_depth=context.callee_depth,
                 degraded_to_file=context.degraded_to_file,
                 context_text=context.text,
             )
@@ -272,9 +289,11 @@ class SqlCodeContextRepository:
             text=row.context_text,
             available_lines=frozenset(row.available_lines or []),
             callers=tuple(row.callers or ()),
+            callees=tuple(row.callees or ()),
             sanitizers=tuple(row.sanitizers or ()),
             source_expression=row.source_expression,
             caller_depth=row.caller_depth,
+            callee_depth=row.callee_depth,
             degraded_to_file=row.degraded_to_file,
         )
 
@@ -432,3 +451,61 @@ class SqlVerdictRepository:
             )
         ).scalars()
         return [self._to_entity(r) for r in rows]
+
+
+class SqlAuditRepository:
+    """Decisiones de auditoria del producto.
+
+    Guardar una nueva retira la vigencia de las anteriores en la misma
+    operacion. Hacerlo en dos pasos dejaria, ante un fallo entre medias, dos
+    decisiones vigentes sobre el mismo hallazgo, y entonces cual vale seria una
+    cuestion de suerte.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save(self, audit: Audit) -> None:
+        await self._session.execute(
+            update(AuditRow)
+            .where(
+                AuditRow.finding_id == str(audit.finding_id),
+                AuditRow.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        self._session.add(
+            AuditRow(
+                id=str(audit.id),
+                finding_id=str(audit.finding_id),
+                user_id=str(audit.user_id) if audit.user_id else None,
+                value=audit.value.value,
+                seconds=audit.seconds,
+                is_current=audit.is_current,
+                comment=audit.comment,
+                created_at=audit.created_at,
+            )
+        )
+        await self._session.commit()
+
+    async def list_by_finding(self, finding_id: UUID) -> list[Audit]:
+        filas = (
+            await self._session.execute(
+                select(AuditRow)
+                .where(AuditRow.finding_id == str(finding_id))
+                .order_by(AuditRow.created_at.desc())
+            )
+        ).scalars()
+        return [
+            Audit(
+                id=UUID(f.id),
+                finding_id=UUID(f.finding_id),
+                user_id=UUID(f.user_id) if f.user_id else None,
+                value=AuditValue(f.value),
+                seconds=f.seconds,
+                is_current=f.is_current,
+                comment=f.comment,
+                created_at=f.created_at,
+            )
+            for f in filas
+        ]
