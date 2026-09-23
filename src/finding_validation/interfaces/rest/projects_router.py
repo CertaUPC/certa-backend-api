@@ -12,7 +12,8 @@ from sqlalchemy import func, select
 
 from ....shared.database import ExecutionRow, ProjectRow
 from ..schemas.schemas import ProjectRequest, ProjectResponse
-from .dependencies import SessionDep, UserDep
+from ....iam.interfaces.rest.dependencies import UserDep
+from ....shared.rest import SessionDep
 
 router = APIRouter(prefix="/api/v1/projects", tags=["Proyectos"])
 

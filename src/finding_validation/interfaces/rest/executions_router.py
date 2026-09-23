@@ -9,7 +9,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from ....shared.database import ExecutionRow, FindingRow, ProjectRow, VerdictRow
-from ...domain.entities.execution import Execution
+from ...domain.entities.audit import Audit, AuditValue
+from ...domain.entities.execution import Execution, ExecutionStatus
 from ...domain.services.retention_policy import (
     ExecutionRetentionState,
     RetentionPolicy,
@@ -17,22 +18,26 @@ from ...domain.services.retention_policy import (
 from ...domain.value_objects.scope_filter import ScopeFilter
 from ...infrastructure.external.sarif_parser import SarifError
 from ...infrastructure.persistence.sql_repositories import (
+    SqlAuditRepository,
     SqlCodeContextRepository,
     SqlExecutionRepository,
     SqlFindingRepository,
     SqlVerdictRepository,
 )
 from ..schemas.schemas import (
+    AuditRequest,
+    AuditResponse,
     ContextResponse,
+    EnqueuedResponse,
     ExecutionResponse,
     FindingResponse,
     IngestResponse,
     IngestSarifRequest,
-    RunReportResponse,
     StabilityResponse,
     VerdictResponse,
 )
-from .dependencies import ContainerDep, SessionDep, UserDep
+from ....iam.interfaces.rest.dependencies import UserDep
+from ....shared.rest import ContainerDep, SessionDep
 
 router = APIRouter(prefix="/api/v1/executions", tags=["Ejecuciones"])
 
@@ -75,7 +80,7 @@ async def ingest(
 
     try:
         result = await container.ingest_service(session).from_payload(
-            body.project_id, body.sarif, scope
+            body.project_id, body.sarif, scope, created_by=user.user_id
         )
     except SarifError as exc:
         # No cumple el esquema. Se rechaza sin dejar una ejecución a medias.
@@ -133,35 +138,46 @@ async def get_execution(
     return _to_response(execution, nombres.get(execution.project_id, ""))
 
 
-@router.post("/{execution_id}/run", response_model=RunReportResponse)
+@router.post("/{execution_id}/run", status_code=status.HTTP_202_ACCEPTED,
+             response_model=EnqueuedResponse)
 async def run(
     execution_id: UUID,
-    container: ContainerDep,
     session: SessionDep,
     user: UserDep,
-    batch_size: int | None = None,
-) -> RunReportResponse:
-    """Valida los hallazgos pendientes de la ejecución."""
+) -> EnqueuedResponse:
+    """Deja la ejecución en la cola y vuelve de inmediato.
+
+    No valida aquí. Un hallazgo tarda entre diez y veinticinco segundos según el
+    modelo, y un lote de cien con repeticiones son horas: hacerlo dentro de la
+    petición deja abierta una conexión que ninguna plataforma sostiene, y el
+    trabajo muere con el primer reinicio del servicio web.
+
+    Quien ejecuta es el trabajador, que toma de la cola con bloqueo de fila. El
+    avance se consulta por el recorrido de la ejecución.
+    """
     user.require("investigador", "lider_tecnico")
 
-    execution = await SqlExecutionRepository(session).get(execution_id)
+    repo = SqlExecutionRepository(session)
+    execution = await repo.get(execution_id)
     if execution is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe esa ejecución")
 
-    budget = container.new_budget()
-    try:
-        runner = container.runner(session, budget)
-    except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    # Encolar dos veces no duplica el trabajo: la ejecución ya pendiente se
+    # queda como está, y una en proceso la toma ya un trabajador.
+    if execution.status is ExecutionStatus.COMPLETED:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Esa ejecución ya terminó. Para volver a correrla, reanúdala.",
+        )
 
-    report = await runner.run(execution, batch_size)
-    return RunReportResponse(
-        execution_id=report.execution_id,
-        validated=report.validated,
-        failed=report.failed,
-        interrupted=report.interrupted,
-        interruption_reason=report.interruption_reason,
-        budget=budget.report(),
+    return EnqueuedResponse(
+        execution_id=execution.id,
+        status=execution.status.value,
+        pending_findings=execution.pending_findings,
+        message=(
+            "En cola. La toma el siguiente trabajador disponible; el avance se "
+            "consulta en el recorrido de la ejecución."
+        ),
     )
 
 
@@ -378,3 +394,73 @@ async def purge_context(
     execution.context_purged = True
     await repo.save(execution)
     return {"purged": purged, "reason": decision.reason}
+
+
+
+@router.post(
+    "/findings/{finding_id}/audit",
+    response_model=AuditResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_audit(
+    finding_id: UUID,
+    body: AuditRequest,
+    session: SessionDep,
+    user: UserDep,
+) -> AuditResponse:
+    """Registra la decisión de quien audita, fuera de cualquier estudio.
+
+    Existe aparte del recorrido de decisiones del experimento porque aquel
+    exige participante y condición asignada. Un usuario del producto no tiene
+    ninguna de las dos, y pedírselas obligaba a registrarlo como sujeto de un
+    estudio para poder usar la herramienta.
+
+    Rectificar no sobrescribe: se guarda otra y la anterior deja de ser la
+    vigente, de modo que el historial permita distinguir una primera impresión
+    de una conclusión.
+    """
+    finding = await SqlFindingRepository(session).get(finding_id)
+    if finding is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese hallazgo")
+
+    try:
+        audit = Audit(
+            finding_id=finding_id,
+            value=AuditValue(body.value),
+            seconds=body.seconds,
+            user_id=user.user_id,
+            comment=body.comment,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    await SqlAuditRepository(session).save(audit)
+    return AuditResponse(
+        id=audit.id,
+        finding_id=audit.finding_id,
+        value=audit.value.value,
+        seconds=audit.seconds,
+        is_current=audit.is_current,
+        comment=audit.comment,
+        created_at=audit.created_at,
+    )
+
+
+@router.get("/findings/{finding_id}/audits", response_model=list[AuditResponse])
+async def audit_history(
+    finding_id: UUID, session: SessionDep, user: UserDep
+) -> list[AuditResponse]:
+    """El historial, rectificaciones incluidas, de la más reciente a la primera."""
+    registros = await SqlAuditRepository(session).list_by_finding(finding_id)
+    return [
+        AuditResponse(
+            id=a.id,
+            finding_id=a.finding_id,
+            value=a.value.value,
+            seconds=a.seconds,
+            is_current=a.is_current,
+            comment=a.comment,
+            created_at=a.created_at,
+        )
+        for a in registros
+    ]

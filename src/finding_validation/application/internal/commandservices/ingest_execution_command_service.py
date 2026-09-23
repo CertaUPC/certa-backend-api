@@ -78,22 +78,31 @@ class IngestExecutionCommandService:
         project_id: UUID,
         payload: dict,
         scope: ScopeFilter | None = None,
+        created_by: UUID | None = None,
     ) -> IngestResult:
-        return await self._ingest(project_id, parse_sarif(payload), scope)
+        return await self._ingest(
+            project_id, parse_sarif(payload), scope, created_by
+        )
 
     async def from_file(
         self,
         project_id: UUID,
         path: str | Path,
         scope: ScopeFilter | None = None,
+        created_by: UUID | None = None,
     ) -> IngestResult:
-        return await self._ingest(project_id, parse_sarif_file(path), scope)
+        # Sin autor cuando entra por linea de ordenes: ahi no hay sesion, y
+        # atribuirla a alguien seria inventar el dato.
+        return await self._ingest(
+            project_id, parse_sarif_file(path), scope, created_by
+        )
 
     async def _ingest(
         self,
         project_id: UUID,
         ingestion: SarifIngestion,
         scope: ScopeFilter | None,
+        created_by: UUID | None = None,
     ) -> IngestResult:
         alcance = scope or ScopeFilter.unrestricted()
         admitidos = alcance.apply(ingestion.findings)
@@ -115,6 +124,7 @@ class IngestExecutionCommandService:
             ruleset_version=ingestion.ruleset_version or "desconocida",
             total_findings=len(admitidos),
             scope=alcance,
+            created_by=created_by,
         )
         await self._executions.save(execution)
         if admitidos:

@@ -12,9 +12,9 @@ import logging
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from .....shared.rate_limiter import ProviderUnavailable
 from .....shared.tracing import Stage, correlate, emit
 from ....domain.entities.execution import Execution
+from ....domain.entities.finding import Finding
 from ....domain.entities.verdict import VerdictValue
 from ....domain.repositories.repositories import (
     FindingRepository,
@@ -26,10 +26,6 @@ from ....domain.services.code_reader_port import CodeReaderPort
 from ....domain.services.deterministic_prefilter import DeterministicPrefilter
 from ....domain.services.language_model_port import LanguageModelPort
 from ....domain.value_objects.prompt_version import PromptVersion
-from ....infrastructure.external.chat_completions_language_model import (
-    ModelContractViolation,
-    ProviderRefused,
-)
 from .validate_finding_command_service import ValidateFindingCommandService
 
 logger = logging.getLogger(__name__)
@@ -48,6 +44,9 @@ class ModelRun:
     not_verifiable: int = 0
     failures: int = 0
     reused: int = 0
+    # Si el tope se alcanzó, la corrida quedó a medias y sus métricas describen
+    # solo la parte que llegó a medirse. Quien lea el cuadro tiene que saberlo.
+    budget_exhausted: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
     usd: float = 0.0
@@ -119,6 +118,7 @@ class Comparison:
                     "no_verificables": r.not_verifiable,
                     "fallos": r.failures,
                     "reutilizados": r.reused,
+                    "tope_agotado": r.budget_exhausted,
                     "consultas": r.queries,
                     "usd": round(r.usd, 2),
                 }
@@ -152,18 +152,29 @@ class CompareModelsCommandService:
         max_queries_per_model: int = 1000,
         usd_per_1k_input: float = 0.0,
         usd_per_1k_output: float = 0.0,
-        batch_size: int | None = None,
+        findings: list[Finding] | None = None,
         resume: bool = False,
     ) -> Comparison:
+        """Corre el lote indicado con cada modelo y contrasta los veredictos.
+
+        El lote se recibe ya elegido y no se recorta aquí. Quien llama es quien
+        decide la muestra, y esa misma lista es la que luego aporta las
+        etiquetas del cuadro de resultados y la que queda anotada en el
+        manifiesto. Recortar por cuenta propia rompería esa correspondencia: se
+        mediría un conjunto y se informaría otro.
+        """
         if len(models) < 2:
             raise ValueError(
                 "Comparar exige al menos dos modelos. Con uno solo no hay "
                 "contraste que medir."
             )
 
-        findings = await self._findings.list_by_execution(execution.id)
-        if batch_size:
-            findings = findings[:batch_size]
+        if findings is None:
+            findings = await self._findings.list_by_execution(execution.id)
+        if not findings:
+            raise ValueError(
+                "El lote llegó vacío. Sin hallazgos no hay nada que comparar."
+            )
 
         comparison = Comparison(execution_id=execution.id)
 
@@ -211,19 +222,47 @@ class CompareModelsCommandService:
                     try:
                         with correlate():
                             outcome = await validator.execute(finding, repetition=rep)
-                    except (ProviderUnavailable, ProviderRefused,
-                            ModelContractViolation) as exc:
-                        # Un hallazgo que el proveedor no resuelve no puede
-                        # llevarse por delante el lote entero: en una corrida de
-                        # cientos de consultas, fallar en la mitad tiraría todo
-                        # lo ya pagado. Se cuenta y se sigue.
+                    except Exception as exc:  # noqa: BLE001
+                        # Un hallazgo que no se resuelve no puede llevarse por
+                        # delante el lote entero: en una corrida de cientos de
+                        # consultas, fallar en una tiraría el cuadro de
+                        # resultados de todo lo ya pagado.
+                        #
+                        # Se atrapa cualquier excepción y no solo las previstas.
+                        # Las previstas son las que ya se conocen; las que han
+                        # costado corridas enteras son las otras, y la lista de
+                        # formas en que un proveedor ajeno puede contestar algo
+                        # inesperado no se puede cerrar de antemano. Una
+                        # respuesta que llegó como arreglo en lugar de objeto
+                        # tumbó la corrida del 15 de setiembre tras siete
+                        # dólares y medio de consultas ya hechas.
+                        #
+                        # El veredicto de cada hallazgo se guarda al obtenerlo,
+                        # de modo que seguir no arriesga nada: lo medido está a
+                        # salvo y el fallo queda contado en el cuadro, que es
+                        # además un dato sobre la fiabilidad del proveedor.
                         run.failures += 1
                         logger.warning(
-                            "El modelo %s no resolvió el hallazgo %s: %s",
-                            model.model_name, finding.id, exc,
+                            "El modelo %s no resolvió el hallazgo %s: %s: %s",
+                            model.model_name, finding.id,
+                            type(exc).__name__, exc,
                         )
                         continue
                     if not outcome.succeeded or outcome.verdict is None:
+                        # El validador no deja escapar el agotamiento del tope:
+                        # devuelve un resultado sin veredicto. Sin comprobarlo
+                        # aquí, la corrida seguiría recorriendo el lote entero
+                        # sin consultar nada y el cuadro saldría con menos
+                        # veredictos y sin decir por qué.
+                        if budget.is_exhausted:
+                            run.budget_exhausted = True
+                            logger.warning(
+                                "El modelo %s agotó su tope de %d consultas en "
+                                "la repetición %d. Se cierra esa corrida y se "
+                                "sigue con el resto.",
+                                model.model_name, max_queries_per_model, rep,
+                            )
+                            break
                         continue
                     v = outcome.verdict
                     run.verdicts[finding.id] = v.value

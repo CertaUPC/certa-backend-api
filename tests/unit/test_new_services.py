@@ -6,13 +6,18 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import src.shared.database_experiment  # noqa: F401  (registra sus tablas)
 from src.finding_validation.application.internal.commandservices.compare_models_command_service import (
     CompareModelsCommandService,
 )
 from src.finding_validation.application.internal.commandservices.prepare_session_command_service import (
     PrepareSessionCommandService,
+)
+from src.finding_validation.application.internal.commandservices.run_execution_command_service import (
+    RunExecutionCommandService,
 )
 from src.finding_validation.application.internal.commandservices.validate_finding_command_service import (
     ValidateFindingCommandService,
@@ -25,11 +30,17 @@ from src.finding_validation.domain.services.budget_guard import BudgetGuard
 from src.finding_validation.domain.services.deterministic_prefilter import (
     DeterministicPrefilter,
 )
+from src.finding_validation.domain.services.priority_calculator import (
+    PriorityCalculator,
+)
 from src.finding_validation.domain.value_objects.code_location import CodeLocation
 from src.finding_validation.domain.value_objects.fingerprint import Fingerprint
 from src.finding_validation.domain.value_objects.prompt_version import (
     OUTPUT_CONTRACT_V1,
     PromptVersion,
+)
+from src.finding_validation.infrastructure.external.chat_completions_language_model import (
+    ModelContractViolation,
 )
 from src.finding_validation.infrastructure.external.code_reader_registry import (
     CodeReaderRegistry,
@@ -45,7 +56,12 @@ from src.finding_validation.infrastructure.persistence.sql_repositories import (
     SqlFindingRepository,
     SqlVerdictRepository,
 )
-from src.shared.database import Base, ProjectRow
+from src.shared.database import Base, FindingRow, ProjectRow
+
+# Registra la tabla de cuentas, que executions referencia por clave
+# foránea. Sin esto el archivo pasa dentro de la suite, porque otro
+# módulo la importa, y falla al correrlo solo.
+import src.iam.infrastructure.persistence.models  # noqa: F401
 from src.shared.tracing import (
     Stage,
     correlate,
@@ -272,6 +288,37 @@ class TestCompareModels:
         assert {r.model for r in c.runs} == {"m1", "m2"}
         assert all(len(r.verdicts) == 4 for r in c.runs)
 
+    async def test_only_the_given_batch_is_queried(self, env):
+        """El lote que se paga tiene que ser el lote que se eligió.
+
+        Si el servicio vuelve a leer todos los hallazgos de la ejecución, se
+        consulta a un conjunto y se informan las etiquetas de otro: el gasto se
+        va en hallazgos que no entran en la medición y el cuadro de resultados
+        describe una muestra que nunca se corrió.
+        """
+        todos = await SqlFindingRepository(env["session"]).list_by_execution(
+            env["execution"].id
+        )
+        assert len(todos) == 4, "la ejecución de prueba trae cuatro hallazgos"
+        elegidos = todos[:2]
+
+        a = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m1", "v1")
+        b = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m2", "v1")
+        c = await self._service(env).compare(
+            env["execution"], [a, b], findings=elegidos
+        )
+
+        esperados = {f.id for f in elegidos}
+        for r in c.runs:
+            assert set(r.verdicts) == esperados
+        assert a.call_count == 2
+
+    async def test_empty_batch_is_refused(self, env):
+        a = ScriptedLanguageModel(deque([exploitable([4])]), "m1", "v1")
+        b = ScriptedLanguageModel(deque([exploitable([4])]), "m2", "v1")
+        with pytest.raises(ValueError, match="vacío"):
+            await self._service(env).compare(env["execution"], [a, b], findings=[])
+
     async def test_full_agreement(self, env):
         a = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m1", "v1")
         b = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m2", "v1")
@@ -299,6 +346,29 @@ class TestCompareModels:
         assert all(r.queries <= 4 for r in c.runs)
         assert all(r.queries == 4 for r in c.runs)
 
+    async def test_hitting_the_cap_ends_that_run_not_the_comparison(self, env):
+        """Agotar el tope de un modelo no puede tirar la comparación entera.
+
+        El tope está por si una configuración mal puesta se desboca, no para
+        abortar. Si al alcanzarlo se propaga el error, se pierde el cuadro de
+        resultados de todos los modelos, incluidos los que ya terminaron y ya
+        se pagaron, y lo medido se queda en la base sin que nadie lo lea.
+        """
+        a = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(20)]), "m1", "v1")
+        b = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(20)]), "m2", "v1")
+        c = await self._service(env).compare(
+            env["execution"], [a, b], max_queries_per_model=2
+        )
+        assert len(c.runs) == 2, "los dos modelos tienen que aparecer en el cuadro"
+        assert all(len(r.verdicts) == 2 for r in c.runs)
+        assert all(r.budget_exhausted for r in c.runs)
+
+    async def test_a_run_within_budget_is_not_marked_exhausted(self, env):
+        a = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m1", "v1")
+        b = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(8)]), "m2", "v1")
+        c = await self._service(env).compare(env["execution"], [a, b])
+        assert not any(r.budget_exhausted for r in c.runs)
+
     async def test_repetitions_do_not_reuse_verdicts(self, env):
         """Reutilizar entre repeticiones anularía lo que la repetición mide."""
         a = ScriptedLanguageModel(deque([exploitable([4]) for _ in range(20)]), "m1", "v1")
@@ -315,3 +385,182 @@ class TestCompareModels:
         assert len(r["modelos"]) == 2
         assert "anclaje_primera" in r["modelos"][0]
         assert VerdictValue.EXPLOITABLE.value == "explotable"
+
+
+# ═══════════════════════════════ una consulta fallida no se lleva el lote
+class ModeloQueFallaUnaVez:
+    """Responde bien salvo en la consulta indicada, donde rompe el contrato."""
+
+    model_name = "modelo-que-falla"
+    model_version = "v1"
+
+    def __init__(self, falla_en: int) -> None:
+        self._falla_en = falla_en
+        self.consultas = 0
+
+    async def judge(self, finding, context, retry_hint=None):
+        self.consultas += 1
+        if self.consultas == self._falla_en:
+            raise ModelContractViolation("La respuesta no contiene ningún objeto JSON")
+        return exploitable([4])
+
+
+class TestUnaConsultaFallidaNoSeLlevaElLote:
+    """Regresión de una corrida real sobre el conjunto de referencia.
+
+    Una respuesta fuera de contrato subía sin atrapar desde el adaptador hasta
+    el que recorre el lote. El lote moría ahí: los veredictos ya guardados se
+    quedaban sin orden, la ejecución sin contar lo validado, y la corrida había
+    que empezarla de nuevo aunque lo pagado siguiera en la base.
+    """
+
+    def _runner(self, env, modelo):
+        sesion = env["session"]
+        return RunExecutionCommandService(
+            execution_repository=SqlExecutionRepository(sesion),
+            finding_repository=SqlFindingRepository(sesion),
+            context_repository=SqlCodeContextRepository(sesion),
+            verdict_repository=SqlVerdictRepository(sesion),
+            validator=_validator(env, modelo, BudgetGuard(max_queries=50)),
+            budget=BudgetGuard(max_queries=50),
+            priority_calculator=PriorityCalculator(),
+            prompt_version="v1",
+        )
+
+    async def test_el_lote_continua_y_cuenta_el_fallo(self, env):
+        modelo = ModeloQueFallaUnaVez(falla_en=2)
+        informe = await self._runner(env, modelo).run(env["execution"])
+        assert informe.failed == 1
+        assert informe.validated == len(env["findings"]) - 1
+        assert not informe.interrupted
+
+    async def test_lo_validado_queda_ordenado(self, env):
+        """El orden es lo que se perdía: sin él la lista priorizada no existe."""
+        modelo = ModeloQueFallaUnaVez(falla_en=2)
+        await self._runner(env, modelo).run(env["execution"])
+        # La prioridad vive en la fila y no en la entidad: el dominio ordena,
+        # la infraestructura guarda el orden.
+        filas = (
+            await env["session"].execute(
+                select(FindingRow.priority).where(
+                    FindingRow.execution_id == str(env["execution"].id)
+                )
+            )
+        ).scalars()
+        con_orden = [p for p in filas if p is not None]
+        assert len(con_orden) == len(env["findings"]) - 1
+
+    async def test_el_hallazgo_fallido_sigue_pendiente(self, env):
+        """Queda para el siguiente intento, sin volver a pagar por los demás."""
+        modelo = ModeloQueFallaUnaVez(falla_en=2)
+        await self._runner(env, modelo).run(env["execution"])
+        pendientes = await SqlFindingRepository(env["session"]).list_pending_validation(
+            env["execution"].id
+        )
+        assert len(pendientes) == 1
+
+    async def test_el_avance_cuenta_lo_guardado_y_no_lo_de_esta_corrida(self, env):
+        """Dos corridas seguidas: la segunda no puede olvidar lo de la primera.
+
+        El contador se llevaba sumando, de modo que una corrida que terminaba
+        sin guardar la ejecución dejaba el avance por debajo de lo realmente
+        validado, y con él el porcentaje y la decisión de darla por completa.
+        """
+        env["execution"].total_findings = len(env["findings"])
+        primera = ModeloQueFallaUnaVez(falla_en=99)
+        await self._runner(env, primera).run(env["execution"], batch_size=2)
+        segunda = ModeloQueFallaUnaVez(falla_en=99)
+        informe = await self._runner(env, segunda).run(env["execution"], batch_size=2)
+
+        assert informe.validated == 2
+        assert env["execution"].validated_findings == len(env["findings"])
+
+
+# ═══════════════════════════ el trabajador toma lo que le toca
+class LectorQueNoEncuentraNada:
+    """Simula un trabajador cuyo repositorio no está donde lo busca."""
+
+    async def recover_context(self, finding, caller_depth=2):
+        raise FileNotFoundError(
+            f"El archivo {finding.location.file_path} ya no existe en el repositorio"
+        )
+
+
+class TestElTrabajadorSoloTomaLoSuyo:
+    """Dos arreglos que van juntos y protegen el mismo lote.
+
+    El trabajador lee el código de SU disco. Sin filtro por proyecto reclama la
+    ejecución de otro repositorio, y como el fallo de contexto se contaba por
+    hallazgo y seguía, se comía el lote entero marcándolo todo como fallo. El
+    trabajador que sí tenía ese código ya no lo encontraba, porque la ejecución
+    había dejado de estar pendiente.
+    """
+
+    async def test_no_reclama_la_ejecucion_de_otro_proyecto(self, env):
+        otro = uuid4()
+        sesion = env["session"]
+        sesion.add(ProjectRow(id=str(otro), name="Otro", repository_path="/otro"))
+        await sesion.commit()
+
+        ajena = Execution(project_id=otro, ruleset_version="1.0")
+        repo = SqlExecutionRepository(sesion)
+        await repo.save(ajena)
+
+        # Atado al proyecto ajeno, no puede ver la del proyecto de la prueba.
+        tomada = await repo.claim_next_pending("trabajador", project_id=otro)
+        assert tomada is not None
+        assert tomada.id == ajena.id
+
+    async def test_sin_proyecto_toma_cualquiera(self, env):
+        """El comportamiento de antes se conserva cuando no se ata a nada."""
+        repo = SqlExecutionRepository(env["session"])
+        tomada = await repo.claim_next_pending("trabajador")
+        assert tomada is not None
+
+    async def test_el_lote_vuelve_a_la_cola_si_no_encuentra_el_codigo(self, env):
+        """Lo que antes consumía la ejecución entera ahora la devuelve."""
+        sesion = env["session"]
+        validador = ValidateFindingCommandService(
+            code_reader=LectorQueNoEncuentraNada(),
+            language_model=ScriptedLanguageModel(deque([exploitable([4])] * 8)),
+            anchor_verifier=AnchorVerifier(),
+            prefilter=DeterministicPrefilter(),
+            budget=BudgetGuard(max_queries=50),
+            prompt_version=PromptVersion.of("v1", "Juzga...", OUTPUT_CONTRACT_V1),
+            verdict_cache={},
+        )
+        runner = RunExecutionCommandService(
+            execution_repository=SqlExecutionRepository(sesion),
+            finding_repository=SqlFindingRepository(sesion),
+            context_repository=SqlCodeContextRepository(sesion),
+            verdict_repository=SqlVerdictRepository(sesion),
+            validator=validador,
+            budget=BudgetGuard(max_queries=50),
+            priority_calculator=PriorityCalculator(),
+            prompt_version="v1",
+        )
+        informe = await runner.run(env["execution"])
+
+        assert informe.interrupted
+        assert "no parece estar donde este trabajador lo busca" in (
+            informe.interruption_reason or ""
+        )
+        # Y lo que importa: sigue pendiente, de modo que otro puede retomarla.
+        assert env["execution"].is_claimable
+
+    async def test_no_aborta_si_ya_habia_validado_alguno(self, env):
+        """Un archivo que se movió no es lo mismo que un repositorio ausente."""
+        modelo = ScriptedLanguageModel(deque([exploitable([4])] * 8))
+        runner = RunExecutionCommandService(
+            execution_repository=SqlExecutionRepository(env["session"]),
+            finding_repository=SqlFindingRepository(env["session"]),
+            context_repository=SqlCodeContextRepository(env["session"]),
+            verdict_repository=SqlVerdictRepository(env["session"]),
+            validator=_validator(env, modelo, BudgetGuard(max_queries=50)),
+            budget=BudgetGuard(max_queries=50),
+            priority_calculator=PriorityCalculator(),
+            prompt_version="v1",
+        )
+        informe = await runner.run(env["execution"])
+        assert not informe.interrupted
+        assert informe.validated == len(env["findings"])

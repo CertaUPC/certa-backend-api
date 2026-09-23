@@ -35,6 +35,11 @@ class ValidationOutcome:
     verdict: Verdict | None
     trace: list[str] = field(default_factory=list)
     error: str | None = None
+    # Se declara en vez de deducirse del texto del error. Quien decide si
+    # aborta el lote necesita distinguir «no encuentro el codigo» de «el
+    # proveedor fallo», y mirar dentro de una cadena para averiguarlo rompe en
+    # cuanto alguien reescribe el mensaje.
+    context_failed: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -91,6 +96,7 @@ class ValidateFindingCommandService:
             context = await self._reader.recover_context(finding, caller_depth)
         except Exception as exc:  # noqa: BLE001 - el adaptador define sus fallos
             outcome.error = f"No se pudo recuperar el contexto: {exc}"
+            outcome.context_failed = True
             outcome.trace.append(outcome.error)
             return outcome
 
@@ -120,7 +126,19 @@ class ValidateFindingCommandService:
                 outcome.trace.append(outcome.error)
                 return outcome
 
-            judgement = await self._model.judge(finding, context, retry_hint)
+            try:
+                judgement = await self._model.judge(finding, context, retry_hint)
+            except Exception as exc:  # noqa: BLE001 - el adaptador define sus fallos
+                # Una consulta fallida es de este hallazgo y no del lote. Antes
+                # subia sin atrapar y se llevaba por delante la corrida entera:
+                # una sola respuesta fuera de contrato entre decenas dejaba el
+                # lote sin ordenar y la ejecucion sin contar lo ya validado,
+                # aunque todos los veredictos anteriores estuvieran guardados.
+                # Se registra como fallo, el hallazgo queda pendiente y el
+                # siguiente intento lo retoma sin volver a pagar por los demas.
+                outcome.error = f"La consulta al modelo falló: {exc}"
+                outcome.trace.append(outcome.error)
+                return outcome
             self._budget.record_usage(judgement.input_tokens, judgement.output_tokens)
 
             justification = Justification.from_model_output(

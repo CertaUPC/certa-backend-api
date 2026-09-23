@@ -5,6 +5,7 @@ algo del negocio, está en el sitio equivocado.
 """
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,29 @@ class IngestSarifRequest(BaseModel):
     scope: ScopeRequest | None = None
 
 
+class AuditRequest(BaseModel):
+    """Decision de auditoria del producto.
+
+    No pide participante ni condicion, a diferencia de DecisionRequest. Esas
+    dos son instrumentacion del estudio: exigirlas obligaba a inventar un
+    participante cada vez que alguien usara la herramienta fuera de el.
+    """
+
+    value: str = Field(description="confirmado, descartado o dudoso")
+    seconds: float = Field(gt=0, description="Tiempo empleado en la revision")
+    comment: str | None = None
+
+
+class AuditResponse(BaseModel):
+    id: UUID
+    finding_id: UUID
+    value: str
+    seconds: float
+    is_current: bool
+    comment: str | None
+    created_at: datetime
+
+
 class DecisionRequest(BaseModel):
     finding_id: UUID
     participant_id: UUID
@@ -40,6 +64,24 @@ class ParticipantRequest(BaseModel):
     consented: bool = Field(
         description="Debe ser verdadero. Sin consentimiento no se registra nada."
     )
+    is_pilot: bool = Field(
+        default=False,
+        description=(
+            "Participa en la sesión piloto. Sus datos quedan fuera del "
+            "análisis y no cuentan para el contrabalanceo."
+        ),
+    )
+
+
+class SessionThemeRequest(BaseModel):
+    """Con qué presentación resolvió la tarea un participante.
+
+    Solo dos valores, y cerrados a propósito: un tema libre dejaría entrar
+    cualquier cadena en una columna que el análisis va a usar como factor.
+    """
+
+    participant_id: UUID
+    theme: Literal["light", "dark"]
 
 
 class ProjectRequest(BaseModel):
@@ -57,18 +99,7 @@ class ProjectRequest(BaseModel):
     )
 
 
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
 # ---------------------------------------------------------------- salida
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    role: str
-
-
 class ProjectResponse(BaseModel):
     id: UUID
     name: str
@@ -171,6 +202,19 @@ class RunReportResponse(BaseModel):
     budget: str
 
 
+class EnqueuedResponse(BaseModel):
+    """Acuse de que el trabajo quedó en la cola.
+
+    No lleva resultados porque no los hay todavía: el trabajador aún no la ha
+    tomado. El avance se consulta en el recorrido de la ejecución.
+    """
+
+    execution_id: UUID
+    status: str
+    pending_findings: int
+    message: str
+
+
 class MetricsResponse(BaseModel):
     execution_id: UUID
     total_verdicts: int
@@ -178,4 +222,10 @@ class MetricsResponse(BaseModel):
     anchor_rate_first_try: float
     run_is_valid: bool
     run_quality_reason: str
+    # Hallazgos en que el veredicto contradice la verdad conocida, y proporción
+    # de ellos que el participante adoptó en lugar de rectificar. Condiciona la
+    # lectura de la exactitud: una mejora acompañada de seguimiento alto indica
+    # traslado de la decisión y no mejor juicio.
+    misleading_verdicts: int
+    misleading_follow_rate: float | None
     budget: str

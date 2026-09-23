@@ -21,6 +21,10 @@ from .validate_finding_command_service import ValidateFindingCommandService
 
 logger = logging.getLogger(__name__)
 
+# Umbral de la red de seguridad del lote. Tres es suficiente para
+# distinguir un archivo que se movio de un repositorio que no esta.
+FALLOS_DE_CONTEXTO_SEGUIDOS = 3
+
 
 @dataclass
 class RunReport:
@@ -34,7 +38,10 @@ class RunReport:
     def describe(self) -> str:
         base = f"{self.validated} hallazgos validados"
         if self.failed:
-            base += f", {self.failed} con fallo de contexto"
+            # No siempre es el contexto: desde que una consulta fallida
+            # deja de llevarse el lote, aqui tambien cae la respuesta
+            # que el proveedor no entrego o entrego fuera de contrato.
+            base += f", {self.failed} sin validar por fallo"
         if self.interrupted:
             base += f". Interrumpida: {self.interruption_reason}"
         return base
@@ -61,9 +68,19 @@ class RunExecutionCommandService:
         self._priority = priority_calculator or PriorityCalculator()
         self._prompt_version = prompt_version
 
-    async def claim_and_run(self, worker: str, batch_size: int | None = None) -> RunReport | None:
-        """Toma la siguiente ejecución pendiente y la procesa. None si no hay."""
-        execution = await self._executions.claim_next_pending(worker)
+    async def claim_and_run(
+        self,
+        worker: str,
+        batch_size: int | None = None,
+        project_id: UUID | None = None,
+    ) -> RunReport | None:
+        """Toma la siguiente ejecución pendiente y la procesa. None si no hay.
+
+        Con `project_id`, solo toma trabajo de ese proyecto. Un trabajador lee
+        el código de su propio disco, de modo que reclamar el de otro
+        repositorio no falla a medias: consume el lote entero.
+        """
+        execution = await self._executions.claim_next_pending(worker, project_id)
         if execution is None:
             return None
         return await self.run(execution, batch_size)
@@ -88,6 +105,11 @@ class RunExecutionCommandService:
             "Ejecución %s: %d hallazgos por validar", execution.id, len(pending)
         )
 
+        # Cuantos fallos de contexto seguidos, sin ninguno validado, bastan
+        # para dar por hecho que el problema es la configuracion y no el
+        # hallazgo. Ver el aborto mas abajo.
+        seguidos = 0
+
         for finding in pending:
             try:
                 outcome = await self._validator.execute(finding)
@@ -103,14 +125,36 @@ class RunExecutionCommandService:
                     report.interrupted = True
                     report.interruption_reason = outcome.error
                     break
+
                 report.failed += 1
+
+                # Red de seguridad. Si el contexto falla de entrada y varias
+                # veces seguidas, lo que falla no es el hallazgo sino la ruta
+                # del repositorio: este trabajador no ve ese codigo. Sin esto
+                # se comia el lote entero marcandolo todo como fallo, y el
+                # trabajador que si tenia el codigo ya no lo encontraba, porque
+                # la ejecucion habia dejado de estar pendiente. Se devuelve a la
+                # cola en vez de consumirla.
+                if outcome.context_failed and report.validated == 0:
+                    seguidos += 1
+                    if seguidos >= FALLOS_DE_CONTEXTO_SEGUIDOS:
+                        report.interrupted = True
+                        report.interruption_reason = (
+                            f"{seguidos} hallazgos seguidos sin contexto "
+                            f"recuperable y ninguno validado. El repositorio no "
+                            f"parece estar donde este trabajador lo busca; la "
+                            f"ejecución vuelve a la cola sin consumirse."
+                        )
+                        logger.error(report.interruption_reason)
+                        break
                 continue
+
+            seguidos = 0
 
             if outcome.context is not None:
                 await self._contexts.save(outcome.context)
             await self._verdicts.save(outcome.verdict, self._prompt_version)
             report.validated += 1
-            execution.validated_findings += 1
 
         await self._rank(execution)
 
@@ -122,7 +166,10 @@ class RunExecutionCommandService:
             logger.warning("Ejecución %s interrumpida: %s", execution.id, report.interruption_reason)
             return report
 
-        if execution.pending_findings == 0:
+        # Se comprueba el estado y no solo el pendiente: volver a correr una
+        # ejecucion ya terminada es legitimo desde la linea de comandos, y sin
+        # esta guarda terminaba en un error de dominio en vez de no hacer nada.
+        if execution.pending_findings == 0 and execution.is_running:
             execution.complete()
         await self._executions.save(execution)
         return report
@@ -143,6 +190,12 @@ class RunExecutionCommandService:
             actual = latest.get(v.finding_id)
             if actual is None or v.repetition >= actual.repetition:  # type: ignore[attr-defined]
                 latest[v.finding_id] = v
+
+        # El avance se deriva de lo que hay guardado y no se lleva sumando.
+        # Sumando se desfasa en cuanto una corrida termina sin guardar la
+        # ejecucion, y entonces el porcentaje miente y la ejecucion no se da
+        # por completa aunque no quede nada pendiente.
+        execution.validated_findings = len(latest)
 
         pairs = [
             (findings[fid], v)  # type: ignore[arg-type]

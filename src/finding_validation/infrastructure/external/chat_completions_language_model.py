@@ -111,6 +111,23 @@ def parse_judgement(
     """Valida contra el contrato antes de dejar entrar nada."""
     data = _extract_json(raw)
 
+    if isinstance(data, list):
+        # Algún proveedor devuelve el veredicto envuelto en un arreglo de un
+        # solo elemento. Se acepta ese caso porque el contenido sí cumple el
+        # contrato; cualquier otro arreglo se rechaza como incumplimiento, que
+        # es una falla contada y no una excepción que tumbe el lote.
+        if len(data) == 1 and isinstance(data[0], dict):
+            data = data[0]
+        else:
+            raise ModelContractViolation(
+                f"La respuesta es un arreglo de {len(data)} elementos y el "
+                f"contrato pide un objeto"
+            )
+    if not isinstance(data, dict):
+        raise ModelContractViolation(
+            f"La respuesta no es un objeto sino {type(data).__name__}"
+        )
+
     valor = data.get("value")
     if not isinstance(valor, str) or not valor.strip():
         raise ModelContractViolation("Falta el campo 'value' o no es texto")

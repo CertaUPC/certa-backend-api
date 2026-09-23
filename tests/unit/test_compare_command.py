@@ -92,6 +92,63 @@ class TestScorecard:
         assert filas[1]["falsos_positivos"] == 1
 
 
+class TestAbstention:
+    """Abstenerse no es afirmar que el hallazgo sea un falso positivo.
+
+    El modelo responde "indeterminado" cuando el fragmento no le alcanza para
+    decidir. Contar esa respuesta como "no explotable" le atribuye una
+    afirmación que no hizo: infla los falsos negativos, hunde la exhaustividad
+    y hace que un modelo prudente puntúe peor que uno que responde al azar.
+
+    Lo que corresponde es medir sobre lo que el modelo sí resolvió, y declarar
+    aparte qué proporción del lote dejó sin resolver. Sin ese segundo dato la
+    primera cifra engaña, porque un modelo que solo se pronuncia sobre lo fácil
+    sacaría una puntuación excelente sin servir para nada.
+    """
+
+    def test_abstention_is_not_counted_as_a_negative(self, lote):
+        ids, verdad = lote
+        E, U = VerdictValue.EXPLOITABLE, VerdictValue.UNDETERMINED
+        c = Comparison(execution_id=uuid4(), runs=[
+            run("prudente", {ids[0]: E, ids[1]: U, ids[2]: U, ids[3]: U})])
+        f = _scorecard(c, verdad)[0]
+        assert f["falsos_negativos"] == 0, "abstenerse no es negar"
+        assert f["verdaderos_positivos"] == 1
+        assert f["exhaustividad"] == 1.0
+
+    def test_coverage_exposes_the_prudent_model(self, lote):
+        """La puntuación alta sobre poco lote tiene que verse como tal."""
+        ids, verdad = lote
+        E, U = VerdictValue.EXPLOITABLE, VerdictValue.UNDETERMINED
+        c = Comparison(execution_id=uuid4(), runs=[
+            run("prudente", {ids[0]: E, ids[1]: U, ids[2]: U, ids[3]: U})])
+        f = _scorecard(c, verdad)[0]
+        assert f["f1"] == 1.0
+        assert f["cobertura"] == 0.25
+        assert f["abstenciones"] == 3
+        assert f["resueltos"] == 1
+        assert f["contrastados"] == 4
+
+    def test_unverifiable_counts_as_abstention_too(self, lote):
+        """Si el anclaje no se pudo comprobar, el veredicto no se usa."""
+        ids, verdad = lote
+        E, NV = VerdictValue.EXPLOITABLE, VerdictValue.NOT_VERIFIABLE
+        c = Comparison(execution_id=uuid4(), runs=[
+            run("sin anclar", {ids[0]: E, ids[1]: NV, ids[2]: NV, ids[3]: NV})])
+        f = _scorecard(c, verdad)[0]
+        assert f["abstenciones"] == 3
+        assert f["cobertura"] == 0.25
+
+    def test_a_model_that_never_commits(self, lote):
+        ids, verdad = lote
+        U = VerdictValue.UNDETERMINED
+        c = Comparison(execution_id=uuid4(), runs=[run("mudo", {i: U for i in ids})])
+        f = _scorecard(c, verdad)[0]
+        assert f["cobertura"] == 0.0
+        assert f["f1"] == 0.0
+        assert f["resueltos"] == 0
+
+
 class TestAgreement:
     def test_unstable_model_shows_it(self, lote):
         """La estabilidad es el criterio de fiabilidad: tres corridas idénticas
@@ -139,3 +196,46 @@ class TestScriptedModel:
         assert modelo.model_name == "guionado"
         assert len(modelo.script) == 2
         assert modelo.script == deque(guion)
+
+
+class TestArrayResponse:
+    """Un proveedor puede contestar cualquier cosa, y una sola respuesta rara
+    no puede costar una corrida entera.
+
+    El 15 de setiembre un modelo devolvió el veredicto envuelto en un arreglo.
+    El parser asumía diccionario, la excepción no estaba entre las previstas y
+    se llevó por delante la comparación completa tras siete dólares y medio ya
+    gastados. Los veredictos se conservaron porque se guardan uno a uno, pero el
+    cuadro de resultados se perdió.
+    """
+
+    @staticmethod
+    def parse(texto):
+        from src.finding_validation.infrastructure.external.chat_completions_language_model import (
+            parse_judgement,
+        )
+        return parse_judgement(texto, 10, 10, 5)
+
+    def test_a_single_element_array_is_unwrapped(self):
+        crudo = ('[{"value": "explotable", "justification_text": "linea 12", '
+                 '"cited_lines": [12], "confidence": 0.9}]')
+        assert self.parse(crudo).value == "explotable"
+
+    def test_a_longer_array_is_a_contract_violation_not_a_crash(self):
+        import pytest
+
+        from src.finding_validation.infrastructure.external.chat_completions_language_model import (
+            ModelContractViolation,
+        )
+        crudo = '[{"value": "explotable"}, {"value": "no_explotable"}]'
+        with pytest.raises(ModelContractViolation):
+            self.parse(crudo)
+
+    def test_a_bare_array_is_a_contract_violation(self):
+        import pytest
+
+        from src.finding_validation.infrastructure.external.chat_completions_language_model import (
+            ModelContractViolation,
+        )
+        with pytest.raises(ModelContractViolation):
+            self.parse('[1, 2, 3]')

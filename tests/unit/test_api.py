@@ -139,6 +139,20 @@ async def client(tmp_path: Path):
     await engine.dispose()
 
 
+async def _procesar(client: AsyncClient) -> None:
+    """Ejecuta un ciclo del trabajador sobre la cola.
+
+    El recorrido de la interfaz solo encola; quien valida es el trabajador. Las
+    pruebas que necesitan veredictos hacen aquí lo que en producción hace el
+    proceso desatendido, sin levantarlo.
+    """
+    container = app.state.container
+    async with container.sessions() as s:
+        budget = container.new_budget()
+        runner = container.runner(s, budget)
+        await runner.claim_and_run("prueba", None)
+
+
 async def _token(client: AsyncClient, role: str = "investigador") -> str:
     email = f"{role}@upc.edu.pe"
     await client.post(
@@ -271,6 +285,39 @@ class TestIngest:
         assert body["execution"]["tool_name"] == "semgrep"
         assert body["execution"]["ruleset_version"] == "1.95.0"
 
+    async def test_la_ejecucion_guarda_quien_la_lanzo(self, client):
+        """El rastro de auditoría, comprobado de extremo a extremo.
+
+        La columna puede existir en el esquema y el endpoint no rellenarla
+        nunca: eso daría un modelo de datos correcto sobre un sistema que sigue
+        sin saber quién lanzó qué.
+        """
+        from sqlalchemy import select
+
+        from src.main import app
+        from src.shared.database import ExecutionRow
+        from src.iam.infrastructure.persistence.models import UserRow
+
+        token = await _token(client)
+        r = await client.post(
+            "/api/v1/executions",
+            json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201
+
+        async with app.state.container.sessions() as s:
+            ejecucion = (await s.execute(select(ExecutionRow))).scalars().one()
+            autor = (
+                await s.execute(
+                    select(UserRow).where(
+                        UserRow.email == "investigador@upc.edu.pe"
+                    )
+                )
+            ).scalars().one()
+
+        assert ejecucion.created_by == autor.id
+
     async def test_rejects_wrong_sarif_version(self, client):
         token = await _token(client)
         r = await client.post(
@@ -322,12 +369,24 @@ class TestRunAndAudit:
         return r.json()["execution"]["id"]
 
     async def test_runs_and_validates(self, client):
+        """Encolar y validar son dos pasos, y esa separación es el diseño.
+
+        La petición acusa recibo y vuelve; quien valida es el trabajador. Aquí
+        se ejerce un ciclo suyo para comprobar la cadena de extremo a extremo.
+        """
         token = await _token(client)
         eid = await self._ingest(client, token)
+
         r = await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
-        assert r.status_code == 200
-        assert r.json()["validated"] == 1
-        assert not r.json()["interrupted"]
+        assert r.status_code == 202
+        assert r.json()["status"] == "pendiente"
+
+        await _procesar(client)
+
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["validated_findings"] == 1
 
     async def test_developer_cannot_run(self, client):
         """Ejecutar consume presupuesto: exige rol autorizado."""
@@ -341,6 +400,7 @@ class TestRunAndAudit:
         token = await _token(client)
         eid = await self._ingest(client, token)
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
 
         r = await client.get(
             f"/api/v1/executions/{eid}/findings", headers=_auth(token)
@@ -358,6 +418,7 @@ class TestRunAndAudit:
         token = await _token(client)
         eid = await self._ingest(client, token)
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
         items = (
             await client.get(f"/api/v1/executions/{eid}/findings", headers=_auth(token))
         ).json()
@@ -380,6 +441,7 @@ class TestRunAndAudit:
         token = await _token(client)
         eid = await self._ingest(client, token)
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
         r = await client.get(
             f"/api/v1/executions/{eid}/findings",
             params={"cwe": "CWE-502"},
@@ -391,6 +453,7 @@ class TestRunAndAudit:
         token = await _token(client)
         eid = await self._ingest(client, token)
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
         r = await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
         body = r.json()
         assert body["validated_findings"] == 1
@@ -401,6 +464,7 @@ class TestRunAndAudit:
         token = await _token(client)
         eid = await self._ingest(client, token)
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
         r = await client.get(f"/api/v1/executions/{eid}/export", headers=_auth(token))
         assert r.status_code == 200
         cuerpo = r.text
@@ -466,6 +530,88 @@ class TestExperiment:
         )
         assert r.status_code == 409
 
+    async def test_records_the_theme_of_the_session(self, client):
+        """US032. Registrar el tema permite descartarlo como factor.
+
+        Sin este dato el análisis tendría que suponer que la presentación no
+        influye en la decisión, que es justo lo que no se puede suponer cuando
+        la usabilidad se declara variable extraña controlada.
+        """
+        token = await _token(client)
+        participante = (
+            await client.post(
+                "/api/v1/experiment/participants",
+                json={
+                    "anonymous_code": "PT1",
+                    "years_of_experience": 3,
+                    "consented": True,
+                },
+                headers=_auth(token),
+            )
+        ).json()["participant_id"]
+
+        r = await client.post(
+            "/api/v1/experiment/sessions/theme",
+            json={"participant_id": participante, "theme": "dark"},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200
+        assert r.json()["theme"] == "dark"
+
+    async def test_the_theme_cannot_change_within_a_session(self, client):
+        """Un segundo tema distinto es la señal de que la presentación cambió a
+        mitad de sesión. Aceptarlo borraría la evidencia de ese cambio."""
+        token = await _token(client)
+        participante = (
+            await client.post(
+                "/api/v1/experiment/participants",
+                json={
+                    "anonymous_code": "PT2",
+                    "years_of_experience": 3,
+                    "consented": True,
+                },
+                headers=_auth(token),
+            )
+        ).json()["participant_id"]
+        cuerpo = {"participant_id": participante, "theme": "light"}
+        await client.post(
+            "/api/v1/experiment/sessions/theme", json=cuerpo, headers=_auth(token)
+        )
+
+        # El mismo, otra vez, no molesta: la pantalla puede reintentar.
+        repetido = await client.post(
+            "/api/v1/experiment/sessions/theme", json=cuerpo, headers=_auth(token)
+        )
+        assert repetido.status_code == 200
+
+        distinto = await client.post(
+            "/api/v1/experiment/sessions/theme",
+            json={"participant_id": participante, "theme": "dark"},
+            headers=_auth(token),
+        )
+        assert distinto.status_code == 409
+        assert "no puede cambiar" in distinto.json()["detail"]
+
+    async def test_rejects_a_theme_outside_the_two_declared(self, client):
+        token = await _token(client)
+        participante = (
+            await client.post(
+                "/api/v1/experiment/participants",
+                json={
+                    "anonymous_code": "PT3",
+                    "years_of_experience": 3,
+                    "consented": True,
+                },
+                headers=_auth(token),
+            )
+        ).json()["participant_id"]
+        r = await client.post(
+            "/api/v1/experiment/sessions/theme",
+            json={"participant_id": participante, "theme": "sepia"},
+            headers=_auth(token),
+        )
+        assert r.status_code == 422
+
     async def test_records_decision_and_supersedes(self, client):
         token = await _token(client)
         eid = (
@@ -476,6 +622,7 @@ class TestExperiment:
             )
         ).json()["execution"]["id"]
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
         finding_id = (
             await client.get(f"/api/v1/executions/{eid}/findings", headers=_auth(token))
         ).json()[0]["id"]
@@ -547,6 +694,7 @@ class TestExperiment:
             )
         ).json()["execution"]["id"]
         await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
 
         r = await client.get(
             f"/api/v1/experiment/executions/{eid}/metrics", headers=_auth(token)
@@ -557,3 +705,151 @@ class TestExperiment:
         assert "exactitud" in body["confusion"]
         assert "verdaderos_positivos" in body["confusion"]
         assert body["anchor_rate_first_try"] == 1.0
+
+    async def test_metrics_report_misleading_follow(self, client):
+        """El recorrido de métricas informa qué hizo la persona con el veredicto
+        equivocado.
+
+        Sin ese dato, un incremento de la exactitud no distingue entre juzgar
+        mejor y obedecer a una herramienta que acierta casi siempre, y ambos
+        producen el mismo número en la variable principal.
+        """
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+        await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
+
+        body = (
+            await client.get(
+                f"/api/v1/experiment/executions/{eid}/metrics", headers=_auth(token)
+            )
+        ).json()
+        assert "misleading_verdicts" in body
+        assert "misleading_follow_rate" in body
+        # Sin hallazgos engañosos la tasa queda sin valor en lugar de en cero:
+        # cero afirmaría que nadie siguió al modelo, y lo cierto es que no hubo
+        # ocasión de hacerlo.
+        if body["misleading_verdicts"] == 0:
+            assert body["misleading_follow_rate"] is None
+
+    async def test_run_encola_y_no_trabaja_en_la_peticion(self, client):
+        """La petición deja el trabajo en la cola y vuelve de inmediato.
+
+        Validar un hallazgo tarda entre diez y veinticinco segundos, y un lote
+        son horas. Hacerlo dentro de la petición deja abierta una conexión que
+        ninguna plataforma sostiene, y el trabajo muere con el primer reinicio
+        del servicio web.
+        """
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        r = await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        assert r.status_code == 202, "encolar se acusa con 202, no con 200"
+        cuerpo = r.json()
+        assert cuerpo["execution_id"] == eid
+        assert cuerpo["status"] == "pendiente"
+
+        # La ejecución queda en la cola, a la espera de que un trabajador la tome.
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["status"] == "pendiente"
+
+    async def test_encolar_dos_veces_no_duplica_el_trabajo(self, client):
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+        await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        segunda = await client.post(
+            f"/api/v1/executions/{eid}/run", headers=_auth(token)
+        )
+        assert segunda.status_code == 202
+        assert segunda.json()["status"] == "pendiente"
+
+
+class TestAuditoriaDelProducto:
+    """El recorrido que sirve fuera del estudio.
+
+    El del experimento exige participante y condición asignada, de modo que un
+    usuario del producto tendría que registrarse como sujeto de un estudio para
+    poder anotar lo que resolvió. Estas pruebas fijan que existe un camino que
+    no lo exige, y que conserva el historial igual que el otro.
+    """
+
+    async def _un_hallazgo(self, client) -> tuple[str, str]:
+        token = await _token(client)
+        r = await client.post(
+            "/api/v1/executions",
+            json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+            headers=_auth(token),
+        )
+        ejecucion = r.json()["execution"]["id"]
+        r = await client.get(
+            f"/api/v1/executions/{ejecucion}/findings", headers=_auth(token)
+        )
+        return token, r.json()[0]["id"]
+
+    async def test_registra_sin_participante_ni_condicion(self, client):
+        token, hallazgo = await self._un_hallazgo(client)
+        r = await client.post(
+            f"/api/v1/executions/findings/{hallazgo}/audit",
+            json={"value": "confirmado", "seconds": 12.5},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        cuerpo = r.json()
+        assert cuerpo["value"] == "confirmado"
+        assert cuerpo["is_current"] is True
+
+    async def test_rectificar_no_sobrescribe(self, client):
+        """Sin historial no se distingue una primera impresión de una conclusión."""
+        token, hallazgo = await self._un_hallazgo(client)
+        for valor in ("descartado", "confirmado"):
+            await client.post(
+                f"/api/v1/executions/findings/{hallazgo}/audit",
+                json={"value": valor, "seconds": 4.0},
+                headers=_auth(token),
+            )
+        r = await client.get(
+            f"/api/v1/executions/findings/{hallazgo}/audits", headers=_auth(token)
+        )
+        historial = r.json()
+        assert len(historial) == 2
+        vigentes = [a for a in historial if a["is_current"]]
+        assert len(vigentes) == 1
+        assert vigentes[0]["value"] == "confirmado"
+
+    async def test_un_hallazgo_que_no_existe_se_rechaza(self, client):
+        token = await _token(client)
+        r = await client.post(
+            f"/api/v1/executions/findings/{uuid4()}/audit",
+            json={"value": "confirmado", "seconds": 1.0},
+            headers=_auth(token),
+        )
+        assert r.status_code == 404
+
+    async def test_un_valor_fuera_del_contrato_se_rechaza(self, client):
+        token, hallazgo = await self._un_hallazgo(client)
+        r = await client.post(
+            f"/api/v1/executions/findings/{hallazgo}/audit",
+            json={"value": "quizas", "seconds": 1.0},
+            headers=_auth(token),
+        )
+        assert r.status_code == 422

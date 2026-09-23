@@ -40,6 +40,11 @@ from .finding_validation.infrastructure.persistence.sql_repositories import (
     SqlFindingRepository,
     SqlVerdictRepository,
 )
+# La tabla de cuentas vive en el contexto de acceso y executions la referencia
+# por clave foránea. Sin este import el metadata queda incompleto y crear el
+# esquema en una base nueva falla. No se usa nada de él: se importa para que
+# la tabla quede registrada.
+from .iam.infrastructure.persistence import models as _cuentas  # noqa: F401
 from .shared.composition import Container
 from .shared.config import get_settings
 from .shared.database import Base, ProjectRow
@@ -276,17 +281,27 @@ async def cmd_compare(args: argparse.Namespace) -> int:
                 max_queries_per_model=args.max_queries,
                 usd_per_1k_input=settings.usd_per_1k_input,
                 usd_per_1k_output=settings.usd_per_1k_output,
-                batch_size=None,
+                findings=findings,
                 resume=args.resume,
             )
 
     verdad = {f.id: f.known_truth for f in findings if f.has_known_truth}
     filas = _scorecard(comparacion, verdad)
+
+    # El costo se recalcula con la tarifa de cada modelo. El guardia de
+    # presupuesto lleva un solo par de precios, que le basta para cortar una
+    # corrida desbocada pero vuelve incomparables las columnas del cuadro.
+    async with container.sessions() as s:
+        registrados = await SqlVerdictRepository(s).list_by_execution(execution.id)
+    del_lote = {f.id for f in findings}
+    _aplicar_costo_real(
+        filas, [v for v in registrados if v.finding_id in del_lote],
+        args.model, settings,
+    )
+
     _print_scorecard(filas, comparacion)
 
     if args.out_dir:
-        async with container.sessions() as s:
-            registrados = await SqlVerdictRepository(s).list_by_execution(execution.id)
         contexto = RunContext(
             execution=execution,
             findings=findings,
@@ -309,22 +324,44 @@ async def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+# Los dos valores en que el modelo se moja. Los otros dos son abstenciones:
+# "indeterminado" la declara el modelo, "no_verificable" la impone el
+# verificador cuando la cita no se pudo anclar al código enviado.
+_SE_PRONUNCIA = (VerdictValue.EXPLOITABLE, VerdictValue.NOT_EXPLOITABLE)
+
+
 def _scorecard(comparacion, verdad: dict) -> list[dict]:
-    """Una fila por corrida, con su matriz de confusión frente a la etiqueta."""
+    """Una fila por corrida, con su matriz de confusión frente a la etiqueta.
+
+    La matriz se levanta solo sobre los veredictos en que el modelo se
+    pronunció. Abstenerse no es afirmar que el hallazgo sea un falso positivo:
+    el modelo responde "indeterminado" cuando el fragmento no le alcanza, y
+    contarlo como negativo le atribuiría una afirmación que no hizo.
+
+    Por eso la fila lleva además la cobertura. La precisión sobre lo resuelto,
+    leída sola, premiaría al modelo que solo se pronuncia sobre lo fácil.
+    """
     calculador = MetricsCalculator()
     filas = []
     for run in comparacion.runs:
+        con_etiqueta = [
+            (fid, valor) for fid, valor in run.verdicts.items() if fid in verdad
+        ]
         pares = [
             (verdad[fid], valor is VerdictValue.EXPLOITABLE)
-            for fid, valor in run.verdicts.items()
-            if fid in verdad
+            for fid, valor in con_etiqueta
+            if valor in _SE_PRONUNCIA
         ]
         matriz = calculador.confusion(pares)
         filas.append({
             "modelo": run.model,
             "repeticion": run.repetition,
             "veredictos": len(run.verdicts),
-            "contrastados": len(pares),
+            "contrastados": len(con_etiqueta),
+            "resueltos": len(pares),
+            "abstenciones": len(con_etiqueta) - len(pares),
+            "cobertura": round(
+                len(pares) / len(con_etiqueta), 4) if con_etiqueta else 0.0,
             "anclaje_primera": round(run.anchor_rate, 4),
             "reintentos": run.retries,
             "no_verificables": run.not_verifiable,
@@ -337,13 +374,57 @@ def _scorecard(comparacion, verdad: dict) -> list[dict]:
     return filas
 
 
+def _aplicar_costo_real(filas: list[dict], verdicts: list, modelos: list[str],
+                        settings) -> None:
+    """Sustituye el costo nominal por el que de verdad cobra cada modelo.
+
+    Si el catálogo no responde se deja lo que había y se avisa: seguir con el
+    costo nominal es peor que nada solo si nadie lo sabe. La corrida no se
+    detiene por esto, que sería tirar horas de medición por una columna.
+    """
+    from .model_pricing import PriceUnavailable, costs_by_run, fetch_prices
+
+    try:
+        tarifas = fetch_prices(settings, modelos)
+    except PriceUnavailable as exc:
+        print(f"AVISO: {exc}. La columna de costo queda con la tarifa única "
+              f"del guardia de presupuesto y no sirve para comparar modelos.",
+              file=sys.stderr)
+        return
+
+    faltan = [m for m in modelos if m not in tarifas]
+    if faltan:
+        print(f"AVISO: el catálogo no trae precio de {', '.join(faltan)}.",
+              file=sys.stderr)
+
+    por_corrida = costs_by_run(verdicts, tarifas)
+    for fila in filas:
+        datos = None
+        for (modelo, _, rep), valores in por_corrida.items():
+            if modelo == fila["modelo"] and rep == fila["repeticion"]:
+                datos = valores
+                break
+        if datos is None:
+            continue
+        fila["tokens_entrada"] = datos["tokens_entrada"]
+        fila["tokens_salida"] = datos["tokens_salida"]
+        if datos["usd"] is not None:
+            fila["usd"] = datos["usd"]
+
+
 def _print_scorecard(filas: list[dict], comparacion) -> None:
+    # La cobertura va junto a la F1 y no en una nota al pie: las tres primeras
+    # columnas describen solo la parte del lote que el modelo resolvió, y
+    # leerlas sin saber cuánta parte es eso lleva a conclusiones falsas.
     print(f"\n{'modelo':<34} {'rep':>4} {'F1':>7} {'prec':>7} {'exh':>7} "
-          f"{'anclaje':>8} {'USD':>8}")
+          f"{'cobert':>7} {'anclaje':>8} {'USD':>8}")
     for f in filas:
         print(f"{f['modelo']:<34} {f['repeticion']:>4} {f['f1']:>7.3f} "
               f"{f['precision']:>7.3f} {f['exhaustividad']:>7.3f} "
+              f"{f['cobertura']:>7.3f} "
               f"{f['anclaje_primera']:>8.3f} {f['usd']:>8.4f}")
+    print("\nF1, precisión y exhaustividad se calculan sobre los hallazgos que "
+          "el modelo resolvió.\nLa cobertura dice qué proporción del lote es esa.")
     print(f"\nAcuerdo entre corridas: {comparacion.agreement():.4f}")
     print(f"Desacuerdos: {len(comparacion.disagreements())}")
     print(f"Costo total: {sum(f['usd'] for f in filas):.4f} USD\n")
