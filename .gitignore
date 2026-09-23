@@ -8,3 +8,7 @@ htmlcov/
 *.db
 coverage.xml
 repos/
+
+# Respaldos que dejan las migraciones y las cargas antes de tocar la base.
+# «*.db» no los cubre porque el sufijo va detras de la extension.
+certa.db.*
