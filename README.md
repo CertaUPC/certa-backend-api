@@ -11,9 +11,9 @@ sin suprimir nada.
 Completo y conectado al front.
 
 ```
-venv\Scripts\python.exe -m pytest       163 pruebas
+venv\Scripts\python.exe -m pytest       369 pruebas
 venv\Scripts\python.exe -m ruff check src tests tools
-py tools\check_architecture.py          25 módulos de dominio
+py tools\check_architecture.py          29 módulos de dominio
 py tools\check_all.py                   189 comprobaciones, sin instalar nada
 ```
 

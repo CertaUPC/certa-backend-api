@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import src.iam.infrastructure.persistence.models  # noqa: F401  registra users
 import src.shared.database_experiment  # noqa: F401  registra sus tablas
 from src.shared.config import get_settings
 from src.shared.database import Base, normalize_database_url
