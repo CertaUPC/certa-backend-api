@@ -12,6 +12,15 @@ from . import java_source_scanner as scanner
 TARGET_MIN_LINES = 150
 TARGET_MAX_LINES = 250
 
+# Techo del contexto una vez sumados llamadores y llamados. Es más alto que la
+# ventana degradada porque aquí no se recorta por cercanía sino por unidades
+# completas: entra el método entero o no entra.
+TARGET_CONTEXT_LINES = 400
+
+# Eslabones de delegación que se siguen. Dos alcanzan la forma habitual, en que
+# el contenedor pasa el dato a un auxiliar y ese lo sanea o no.
+CALLEE_DEPTH = 2
+
 
 class CodeUnavailable(RuntimeError):
     """El archivo que el hallazgo señala ya no existe o no se puede leer."""
@@ -27,6 +36,8 @@ class JavaCodeReader:
 
     repository_root: Path
     max_file_lines: int = TARGET_MAX_LINES
+    max_context_lines: int = TARGET_CONTEXT_LINES
+    callee_depth: int = CALLEE_DEPTH
 
     @property
     def language(self) -> str:
@@ -70,6 +81,14 @@ class JavaCodeReader:
             )
             blocks.append((caller.start_line, caller.body))
 
+        callees = self._collect_callees(source, method, covered)
+        for callee in callees:
+            covered |= callee.lines
+            sanitizers.extend(
+                s for s in scanner.find_sanitizers(callee.body) if s not in sanitizers
+            )
+            blocks.append((callee.start_line, callee.body))
+
         blocks.sort(key=lambda b: b[0])
         text = self._render(blocks)
 
@@ -79,11 +98,50 @@ class JavaCodeReader:
             text=text,
             available_lines=frozenset(covered),
             callers=tuple(c.name for c in callers[:caller_depth]),
+            callees=tuple(c.name for c in callees),
             sanitizers=tuple(sanitizers),
             source_expression=self._line_at(lines, target),
             caller_depth=caller_depth,
+            callee_depth=self.callee_depth,
             degraded_to_file=False,
         )
+
+    def _collect_callees(
+        self, source: str, method, covered: set[int]
+    ) -> list:
+        """Los métodos a los que se delega, y a los que esos delegan a su vez.
+
+        Se recorre en anchura porque la cadena puede tener varios eslabones: el
+        contenedor pasa el dato a un auxiliar y ese a otro. Lo que decide el
+        veredicto es el último, el que toca el dato antes del sumidero.
+
+        Dos topes lo acotan: la profundidad, y el total de líneas del contexto.
+        Sin ellos un archivo muy enlazado arrastraría el proyecto entero a cada
+        consulta, y se paga por token enviado.
+        """
+        salida: list = []
+        vistos = {method.name}
+        frontera = [method]
+
+        for _ in range(self.callee_depth):
+            siguiente = []
+            for actual in frontera:
+                for candidato in scanner.find_callees(source, actual):
+                    if candidato.name in vistos:
+                        continue
+                    if len(covered | set(candidato.lines)) > self.max_context_lines:
+                        # El presupuesto de contexto se acabó. Se para aquí en
+                        # lugar de recortar el cuerpo a la mitad: un método
+                        # cortado induce a error más que la ausencia.
+                        return salida
+                    vistos.add(candidato.name)
+                    covered |= set(candidato.lines)
+                    salida.append(candidato)
+                    siguiente.append(candidato)
+            if not siguiente:
+                break
+            frontera = siguiente
+        return salida
 
     def _degraded_context(
         self, finding: Finding, lines: list[str], target: int
@@ -110,6 +168,7 @@ class JavaCodeReader:
             sanitizers=tuple(scanner.find_sanitizers(body)),
             source_expression=self._line_at(lines, target),
             caller_depth=0,
+            callee_depth=0,
             degraded_to_file=True,
         )
 

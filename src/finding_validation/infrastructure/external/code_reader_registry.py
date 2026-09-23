@@ -21,9 +21,15 @@ logger = logging.getLogger(__name__)
 
 class CodeReaderRegistry:
 
-    def __init__(self, repository_root: Path, max_context_lines: int = 250) -> None:
+    def __init__(
+        self,
+        repository_root: Path,
+        max_context_lines: int = 250,
+        callee_depth: int = 2,
+    ) -> None:
         self._root = Path(repository_root)
         self._max_lines = max_context_lines
+        self._callee_depth = callee_depth
         self._fallback = WindowCodeReader(self._root, max_context_lines)
         self._readers: dict[str, TreeSitterCodeReader] = {}
         self._unavailable: dict[str, str] = {}
@@ -42,7 +48,9 @@ class CodeReaderRegistry:
         if cached is not None:
             return cached
         try:
-            reader = TreeSitterCodeReader(self._root, profile, self._max_lines)
+            reader = TreeSitterCodeReader(
+                self._root, profile, self._max_lines, self._callee_depth
+            )
         except (ImportError, Exception) as exc:  # noqa: BLE001
             # Falta la gramática, o la consulta no compila contra ella. Se anota
             # una vez y se sigue: un perfil roto no puede parar el lote entero.

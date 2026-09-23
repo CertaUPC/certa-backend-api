@@ -60,6 +60,7 @@ def window_around(
         sanitizers=tuple(guess_sanitizers("\n".join(lines[start - 1 : end]))),
         source_expression=lines[target - 1].strip() if target <= len(lines) else None,
         caller_depth=0,
+        callee_depth=0,
         degraded_to_file=True,
     )
 

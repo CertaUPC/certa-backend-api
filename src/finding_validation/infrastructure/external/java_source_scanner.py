@@ -17,18 +17,66 @@ LIMITATIONS = (
 )
 
 # Firma de método Java: modificadores, tipo de retorno, nombre y paréntesis.
+#
+# Los modificadores y el tipo de retorno se buscan en la misma línea que el
+# nombre. Admitirlos a lo largo de varias líneas dispara un retroceso
+# desbocado: al fallar la firma, el motor reprueba cada reparto posible del
+# espacio en blanco a lo largo del archivo entero. Medido sobre los archivos
+# auxiliares del conjunto de referencia, esa variante tardaba 216 segundos por
+# archivo; acotada a la línea tarda menos de un milisegundo.
+#
+# Dentro de los ángulos se admite cualquier cosa salvo el fin de línea y las
+# llaves, para que un genérico anidado como ResponseEntity<List<Mensaje>> entre
+# entero. Exigir ángulos balanceados dejaría fuera esas firmas.
+#
+# Las anotaciones que preceden a la firma entran en el método. Es lo que hace
+# el recorrido por árbol sintáctico, y el contexto no puede depender de cuál de
+# los dos esté disponible. Además la anotación informa: @GetMapping dice que el
+# método es una entrada web, y eso pesa al juzgar si el dato lo controla quien
+# ataca.
 _METHOD = re.compile(
-    r"^[ \t]*(?:(?:public|protected|private|static|final|synchronized|abstract|native)\s+)*"
-    r"(?:<[^>]+>\s*)?"
-    r"[\w.<>\[\],\s]+\s+"
-    r"(?P<name>\w+)\s*\([^;{]*\)\s*(?:throws\s+[\w.,\s]+)?\{",
+    r"^(?:[ \t]*@[\w.$]+(?:[ \t]*\([^\r\n]*\))?[ \t]*\r?\n)*"
+    r"[ \t]*"
+    r"(?:(?:public|protected|private|static|final|synchronized|abstract|native"
+    r"|default|strictfp)[ \t]+)*"
+    r"(?:<[^;{}\r\n]*>[ \t]*)?"
+    r"[\w.$]+(?:[ \t]*<[^;{}\r\n]*>)?(?:[ \t]*\[[ \t]*\])*"
+    r"[ \t]+"
+    r"(?P<name>\w+)[ \t]*\([^;{]*?\)"
+    r"[ \t\r\n]*(?:throws[ \t]+[\w.,\s]*?)?\{",
     re.MULTILINE,
 )
 
-_STRING = re.compile(r'"(?:\\.|[^"\\])*"')
-_CHAR = re.compile(r"'(?:\\.|[^'\\])*'")
-_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-_LINE_COMMENT = re.compile(r"//[^\n]*")
+# Palabras que abren un bloque precedido de paréntesis. Tienen la misma forma
+# que una firma de método y el patrón no las distingue por sí solo.
+#
+# Confundirlas sale caro por partida doble: el bloque se añade otra vez al
+# contexto aunque ya venga dentro del método que lo contiene, y se paga por
+# token enviado; y el método contenedor que se informa pasa a ser el bloque más
+# interno, de modo que el modelo recibe un `if` suelto en lugar del método
+# entero y pierde de vista de dónde viene el dato.
+_NOT_METHOD_NAMES = frozenset({
+    "if", "else", "for", "while", "switch", "catch", "do", "try", "finally",
+    "return", "new", "case", "instanceof", "assert", "throw", "synchronized",
+})
+
+# Una sola alternancia, no cuatro pasadas encadenadas. Encadenarlas hace que
+# cada una vea lo que la anterior ya rompió: enmascarar los comentarios primero
+# convierte la barra doble de "ldap://servidor" en un comentario, borra el resto
+# de la línea con la comilla de cierre incluida, y a partir de ahí las comillas
+# se emparejan con las de otras líneas y se enmascara código de verdad, llaves
+# incluidas. Un método pasaba entonces a tragarse a los que venían detrás.
+#
+# Recorrido de una pasada, el motor decide por posición: gana quien empiece
+# antes, que es la regla del lenguaje. El orden de las ramas solo desempata
+# entre las que empiezan en el mismo sitio.
+_MASKABLE = re.compile(
+    r'"(?:\\.|[^"\\\n])*"'      # cadena
+    r"|'(?:\\.|[^'\\\n])*'"     # carácter
+    r"|/\*.*?\*/"               # comentario de bloque
+    r"|//[^\n]*",               # comentario de línea
+    re.DOTALL,
+)
 
 # Catálogo explícito, no inferido: así se puede auditar. El adaptador de árbol
 # sintáctico lo reutiliza.
@@ -51,10 +99,7 @@ def _blank_out_literals(source: str) -> str:
     def _mask(match: re.Match[str]) -> str:
         return "".join("\n" if c == "\n" else " " for c in match.group(0))
 
-    masked = _BLOCK_COMMENT.sub(_mask, source)
-    masked = _LINE_COMMENT.sub(_mask, masked)
-    masked = _STRING.sub(_mask, masked)
-    return _CHAR.sub(_mask, masked)
+    return _MASKABLE.sub(_mask, source)
 
 
 @dataclass(frozen=True)
@@ -94,6 +139,8 @@ def find_methods(source: str) -> list[JavaMethod]:
     methods: list[JavaMethod] = []
 
     for match in _METHOD.finditer(masked):
+        if match.group("name") in _NOT_METHOD_NAMES:
+            continue
         open_index = masked.index("{", match.end() - 1)
         close_index = _matching_brace(masked, open_index)
         if close_index is None:
@@ -141,6 +188,31 @@ def find_callers(source: str, method_name: str) -> list[JavaMethod]:
         if call.search(_blank_out_literals(method.body)):
             callers.append(method)
     return callers
+
+
+def find_callees(source: str, method: JavaMethod | None) -> list[JavaMethod]:
+    """Métodos del archivo a los que el método indicado delega.
+
+    El saneamiento rara vez está en el método que contiene la línea señalada:
+    está en el auxiliar al que ese método le pasa el dato. Sin su cuerpo se ve
+    de dónde viene el dato y dónde acaba, pero no qué le hicieron por el camino,
+    que es justo lo que decide si el hallazgo es real.
+
+    Se limita a los métodos declarados en el mismo archivo. Resolver llamadas
+    fuera de él exigiría un grafo de tipos que aquí no hay, y adivinar a qué
+    método se refiere un nombre repetido sería peor que no traerlo.
+    """
+    if method is None:
+        return []
+    cuerpo = _blank_out_literals(method.body)
+    salida: list[JavaMethod] = []
+    for candidato in find_methods(source):
+        if candidato.name == method.name:
+            continue
+        llamada = re.compile(r"\b" + re.escape(candidato.name) + r"\s*\(")
+        if llamada.search(cuerpo) and candidato not in salida:
+            salida.append(candidato)
+    return salida
 
 
 def find_sanitizers(body: str, hints: tuple[str, ...] = SANITIZER_HINTS) -> list[str]:

@@ -15,9 +15,14 @@ class CodeContext:
     text: str
     available_lines: frozenset[int]
     callers: tuple[str, ...] = ()
+    # Métodos a los que el contenedor delega el dato. Se anotan aparte de los
+    # llamadores porque responden a preguntas distintas: el llamador dice de
+    # dónde viene el dato, el llamado dice qué le hicieron antes del sumidero.
+    callees: tuple[str, ...] = ()
     sanitizers: tuple[str, ...] = ()
     source_expression: str | None = None
     caller_depth: int = 2
+    callee_depth: int = 2
     degraded_to_file: bool = False
     id: UUID = field(default_factory=uuid4)
 

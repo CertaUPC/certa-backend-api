@@ -13,6 +13,30 @@ from .window_code_reader import CodeUnavailable, render_numbered, window_around
 
 DEFAULT_MAX_CONTEXT_LINES = 250
 
+# Eslabones de delegación que se siguen. Dos cubren la forma habitual, en que la
+# función contenedora pasa el dato a un auxiliar y ese lo sanea o no.
+DEFAULT_CALLEE_DEPTH = 2
+
+
+def _own_name(function: Node, names: list[Node]) -> Node | None:
+    """El identificador que nombra a esta función y no a otra.
+
+    Se pide como campo del nodo, que es lo que dice la gramática. Buscarlo entre
+    las capturas por rango de bytes no sirve: la consulta no las devuelve en
+    orden de documento, y una función que contiene a otra puede quedarse con el
+    nombre de la de dentro. Ocurría en el conjunto de referencia, donde un
+    doPost con una clase anónima dentro aparecía nombrado mapRow, y con ese
+    nombre se buscaban después sus llamadores y sus llamados.
+
+    El repliegue por rango queda para una gramática cuyo nodo no exponga el
+    campo; ahí se toma el primero en orden de documento, que es el propio.
+    """
+    campo = function.child_by_field_name("name")
+    if campo is not None:
+        return campo
+    dentro = [n for n in names if function.start_byte <= n.start_byte < function.end_byte]
+    return min(dentro, key=lambda n: n.start_byte) if dentro else None
+
 
 @dataclass(frozen=True)
 class FunctionNode:
@@ -42,6 +66,7 @@ class TreeSitterCodeReader:
     repository_root: Path
     profile: LanguageProfile
     max_context_lines: int = DEFAULT_MAX_CONTEXT_LINES
+    callee_depth: int = DEFAULT_CALLEE_DEPTH
     _parser: Parser = field(init=False, repr=False)
     _language: Language = field(init=False, repr=False)
 
@@ -78,12 +103,7 @@ class TreeSitterCodeReader:
 
         found: list[FunctionNode] = []
         for fn in functions:
-            # Emparejar por posición y no por índice: una función anidada
-            # descuadraría la correspondencia.
-            propio = next(
-                (n for n in names if fn.start_byte <= n.start_byte < fn.end_byte),
-                None,
-            )
+            propio = _own_name(fn, names)
             if propio is None:
                 continue
             found.append(
@@ -126,6 +146,33 @@ class TreeSitterCodeReader:
                 callers.append(fn)
         return callers
 
+    def find_callees(self, source: str, function: FunctionNode) -> list[FunctionNode]:
+        """Funciones del archivo a las que la indicada le pasa el dato.
+
+        El saneamiento casi nunca está en la función que contiene la línea
+        señalada: está en el auxiliar al que esa función delega. Sin su cuerpo,
+        el modelo ve de dónde viene el dato y dónde acaba, pero no qué le
+        hicieron por el camino, que es justo lo que decide si el hallazgo es
+        real. Lo honesto por su parte entonces es abstenerse, y eso deja la
+        mitad del lote sin resolver.
+
+        Se limita a las funciones declaradas en el mismo archivo. Resolver una
+        llamada fuera de él exigiría un grafo de tipos que aquí no hay, y elegir
+        a ciegas entre dos funciones homónimas daría contexto equivocado, que es
+        peor que no darlo.
+        """
+        data = source.encode("utf-8")
+        invocadas = {
+            data[n.start_byte : n.end_byte].decode("utf-8", "replace")
+            for n in self._query(source, self.profile.call_query).get("callee", [])
+            if function.node.start_byte <= n.start_byte < function.node.end_byte
+        }
+        return [
+            f
+            for f in self.find_functions(source)
+            if f.name != function.name and f.name in invocadas
+        ]
+
     def find_sanitizers(self, source: str, node: Node) -> list[str]:
         """Invocaciones dentro del nodo cuyo nombre sugiere saneamiento.
 
@@ -145,6 +192,41 @@ class TreeSitterCodeReader:
             if any(hint in lowered for hint in self.profile.sanitizer_hints):
                 found.append(name)
         return found
+
+    def _collect_callees(
+        self, source: str, function: FunctionNode, covered: set[int]
+    ) -> list[FunctionNode]:
+        """Las funciones a las que se delega, y aquellas a las que esas delegan.
+
+        Se recorre en anchura porque la cadena puede tener varios eslabones. El
+        que decide el veredicto es el último, el que toca el dato justo antes
+        del sumidero.
+
+        El tope de líneas manda: al agotarse se para, en lugar de recortar una
+        función por la mitad. Una función cortada induce a error más que su
+        ausencia, porque el saneamiento podría estar precisamente en el trozo
+        que no se envió.
+        """
+        salida: list[FunctionNode] = []
+        vistas = {function.name}
+        frontera = [function]
+
+        for _ in range(self.callee_depth):
+            siguiente: list[FunctionNode] = []
+            for actual in frontera:
+                for candidata in self.find_callees(source, actual):
+                    if candidata.name in vistas:
+                        continue
+                    if len(covered | candidata.lines) > self.max_context_lines:
+                        return salida
+                    vistas.add(candidata.name)
+                    covered |= candidata.lines
+                    salida.append(candidata)
+                    siguiente.append(candidata)
+            if not siguiente:
+                break
+            frontera = siguiente
+        return salida
 
     async def recover_context(
         self, finding: Finding, caller_depth: int = 2
@@ -174,6 +256,13 @@ class TreeSitterCodeReader:
                 if s not in sanitizers:
                     sanitizers.append(s)
 
+        callees = self._collect_callees(source, function, covered)
+        for callee in callees:
+            blocks.append((callee.start_line, callee.end_line))
+            for s in self.find_sanitizers(source, callee.node):
+                if s not in sanitizers:
+                    sanitizers.append(s)
+
         blocks.sort()
         text = "\n\n".join(render_numbered(lines, a, b) for a, b in blocks)
 
@@ -183,8 +272,10 @@ class TreeSitterCodeReader:
             text=text,
             available_lines=frozenset(covered),
             callers=tuple(c.name for c in callers[:caller_depth]),
+            callees=tuple(c.name for c in callees),
             sanitizers=tuple(sanitizers),
             source_expression=lines[target - 1].strip() if target <= len(lines) else None,
             caller_depth=caller_depth,
+            callee_depth=self.callee_depth,
             degraded_to_file=False,
         )

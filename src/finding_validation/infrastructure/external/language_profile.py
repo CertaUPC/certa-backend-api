@@ -51,8 +51,18 @@ JAVA = LanguageProfile(
     name="java",
     extensions=(".java",),
     grammar_module="tree_sitter_java",
-    function_query="(method_declaration name: (identifier) @name) @function",
-    call_query="(method_invocation name: (identifier) @callee)",
+    # El constructor también transforma el dato, y a menudo es donde vive el
+    # saneamiento. Capturar solo method_declaration lo dejaba fuera: el modelo
+    # veía la llamada pero no el cuerpo, y lo honesto por su parte era
+    # abstenerse.
+    function_query=(
+        "(method_declaration name: (identifier) @name) @function"
+        "\n(constructor_declaration name: (identifier) @name) @function"
+    ),
+    call_query=(
+        "(method_invocation name: (identifier) @callee)"
+        "\n(object_creation_expression type: (type_identifier) @callee)"
+    ),
     sanitizer_hints=COMMON_SANITIZER_HINTS
     + (
         "preparestatement", "setstring", "setint", "bind", "parameterize",
