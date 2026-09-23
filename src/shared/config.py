@@ -57,7 +57,18 @@ class Settings(BaseSettings):
 
     # -- análisis ---------------------------------------------------------
     repository_root: str = "./repos"
+    # Ata al trabajador a un proyecto. Vacio significa que toma cualquier
+    # ejecucion pendiente, que solo es seguro cuando todos los trabajadores de
+    # esa base ven el mismo repositorio: el trabajador lee el codigo de SU
+    # disco, y reclamar el de otro consume el lote sin poder procesarlo.
+    worker_project_id: str = ""
     caller_depth: int = 2
+    # Eslabones de delegación que se siguen al recuperar el contexto. El
+    # saneamiento casi nunca está en el método que contiene la línea señalada,
+    # sino en el auxiliar al que ese método le pasa el dato. Sin su cuerpo el
+    # modelo ve el origen y el sumidero pero no la transformación intermedia, y
+    # se abstiene con razón.
+    callee_depth: int = 2
     max_context_lines: int = 250
     retention_days: int = 30
 

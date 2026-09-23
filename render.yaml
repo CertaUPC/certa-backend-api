@@ -32,3 +32,36 @@ services:
       - key: DEBUG
         value: "false"
 
+  # Proceso desatendido. Toma trabajos de la cola y ejecuta la cadena de
+  # validación. Va aparte del servicio web porque validar un hallazgo tarda
+  # entre diez y veinticinco segundos y un lote son horas: dentro de una
+  # petición HTTP no sobrevive, y un reinicio del servicio se lo llevaría.
+  #
+  # No corre migraciones: de eso se encarga el servicio web, y hacerlo desde dos
+  # sitios a la vez arriesga aplicarlas dos veces.
+  - type: worker
+    name: certa-worker
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.worker
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: REPOSITORY_ROOT
+        sync: false
+      # Cuántos hallazgos toma por ciclo. Sin valor, todos los pendientes de la
+      # ejecución que reclamó.
+      - key: WORKER_BATCH_SIZE
+        sync: false
+      # Ata el trabajador a un proyecto. Sin esto tomaria cualquier ejecucion
+      # pendiente, incluida la de un repositorio que este trabajador no tiene
+      # en disco, y la consumiria entera sin poder procesarla.
+      - key: WORKER_PROJECT_ID
+        sync: false
