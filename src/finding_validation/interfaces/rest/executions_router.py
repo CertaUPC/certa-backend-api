@@ -478,3 +478,82 @@ async def audit_history(
         )
         for a in registros
     ]
+
+
+@router.get("/{execution_id}/compare")
+async def compare_executions(
+    execution_id: UUID, against: UUID, session: SessionDep, user: UserDep
+) -> dict:
+    """Qué cambió entre dos corridas del mismo proyecto.
+
+    Se compara por huella y no por archivo y línea. La huella se calcula sobre
+    el contenido, de modo que un hallazgo se reconoce como el mismo aunque el
+    código se haya movido veinte líneas más abajo: sin eso, insertar una
+    importación arriba del archivo haría aparecer como nuevos a todos los
+    hallazgos de ese archivo.
+
+    Las dos corridas tienen que ser del mismo proyecto. Comparar contra otro
+    proyecto daría tres listas donde todo es nuevo y todo está resuelto, que no
+    es una comparación sino un ruido.
+    """
+    miembros = SqlMembershipRepository(session)
+    visibles = (
+        await session.execute(
+            select(ExecutionRow)
+            .join(ProjectRow, ProjectRow.id == ExecutionRow.project_id)
+            .where(
+                ExecutionRow.id.in_([str(execution_id), str(against)]),
+                miembros.visible_para(user.user_id),
+            )
+        )
+    ).scalars().all()
+    por_id = {r.id: r for r in visibles}
+    nueva, vieja = por_id.get(str(execution_id)), por_id.get(str(against))
+    if nueva is None or vieja is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe esa ejecución")
+    if nueva.project_id != vieja.project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Las dos corridas tienen que ser del mismo proyecto",
+        )
+
+    async def hallazgos(ident: str) -> dict[str, dict]:
+        filas = (
+            await session.execute(
+                select(
+                    FindingRow.id, FindingRow.fingerprint, FindingRow.rule_id,
+                    FindingRow.cwe, FindingRow.rule_severity,
+                    FindingRow.file_path, FindingRow.start_line,
+                ).where(FindingRow.execution_id == ident)
+            )
+        ).all()
+        return {
+            f.fingerprint: {
+                "id": f.id,
+                "fingerprint": f.fingerprint,
+                "rule_id": f.rule_id,
+                "cwe": f.cwe,
+                "severity": f.rule_severity,
+                "file_path": f.file_path,
+                "start_line": f.start_line,
+            }
+            for f in filas
+        }
+
+    de_ahora, de_antes = await hallazgos(nueva.id), await hallazgos(vieja.id)
+    ahora, antes = set(de_ahora), set(de_antes)
+
+    def ordenar(huellas, origen):
+        return sorted(
+            (origen[h] for h in huellas),
+            key=lambda f: (f["file_path"], f["start_line"]),
+        )
+
+    return {
+        "execution_id": str(execution_id),
+        "against": str(against),
+        "project_id": nueva.project_id,
+        "nuevos": ordenar(ahora - antes, de_ahora),
+        "resueltos": ordenar(antes - ahora, de_antes),
+        "siguen": ordenar(ahora & antes, de_ahora),
+    }

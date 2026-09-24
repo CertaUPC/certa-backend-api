@@ -1220,6 +1220,135 @@ class TestLaFichaDecideLaParticipacion:
         assert r.status_code == 422
 
 
+class TestCompararDosCorridas:
+    """Qué cambió entre dos corridas del mismo proyecto.
+
+    Se compara por huella, que se calcula sobre el contenido y no sobre el
+    número de línea: sin eso, meter una importación arriba del archivo haría
+    aparecer como nuevos a todos los hallazgos de ese archivo.
+    """
+
+    async def _corrida(self, client, token, doc):
+        r = await client.post(
+            "/api/v1/executions",
+            json={"project_id": str(PROJECT_ID), "sarif": doc},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        return r.json()["execution"]["id"]
+
+    def _movido(self, lineas: int) -> dict:
+        """El mismo hallazgo, más abajo en el archivo."""
+        doc = sarif_doc()
+        region = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]
+        region["startLine"] += lineas
+        region["endLine"] += lineas
+        return doc
+
+    async def test_el_mismo_hallazgo_movido_no_cuenta_como_nuevo(self, client):
+        token = await _token(client)
+        vieja = await self._corrida(client, token, sarif_doc())
+        nueva = await self._corrida(client, token, self._movido(20))
+
+        r = await client.get(
+            f"/api/v1/executions/{nueva}/compare",
+            params={"against": vieja},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        cuerpo = r.json()
+        assert cuerpo["nuevos"] == []
+        assert cuerpo["resueltos"] == []
+        assert len(cuerpo["siguen"]) == 1
+
+    async def test_lo_que_desaparece_sale_como_resuelto(self, client):
+        token = await _token(client)
+        doc = sarif_doc()
+        vieja = await self._corrida(client, token, doc)
+
+        vacio = sarif_doc()
+        vacio["runs"][0]["results"] = []
+        nueva = await self._corrida(client, token, vacio)
+
+        cuerpo = (
+            await client.get(
+                f"/api/v1/executions/{nueva}/compare",
+                params={"against": vieja},
+                headers=_auth(token),
+            )
+        ).json()
+        assert cuerpo["nuevos"] == []
+        assert len(cuerpo["resueltos"]) == 1
+        assert cuerpo["resueltos"][0]["file_path"].endswith("UserDao.java")
+        assert cuerpo["siguen"] == []
+
+    async def test_no_se_comparan_proyectos_distintos(self, client):
+        """Daría tres listas donde todo es nuevo y todo está resuelto, que no
+        es una comparación."""
+        token = await _token(client)
+        mia = await self._corrida(client, token, sarif_doc())
+        otro = (
+            await client.post(
+                "/api/v1/projects",
+                json={"name": "Otro", "repository_path": "/repos/otro"},
+                headers=_auth(token),
+            )
+        ).json()["id"]
+        suya = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": otro, "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        r = await client.get(
+            f"/api/v1/executions/{mia}/compare",
+            params={"against": suya},
+            headers=_auth(token),
+        )
+        assert r.status_code == 422
+
+    async def test_una_corrida_de_proyecto_privado_ajeno_no_se_compara(
+        self, client
+    ):
+        """Con un proyecto privado. El del montaje es conjunto público, y ese
+        lo ve todo el mundo a propósito."""
+        token = await _token(client)
+        privado = (
+            await client.post(
+                "/api/v1/projects",
+                json={"name": "Privado", "repository_path": "/repos/privado"},
+                headers=_auth(token),
+            )
+        ).json()["id"]
+        suya = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": privado, "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        await client.post(
+            "/api/v1/auth/register",
+            json={"email": "curioso@upc.edu.pe", "password": "contrasena-segura"},
+        )
+        ajeno = (
+            await client.post(
+                "/api/v1/auth/login",
+                json={"email": "curioso@upc.edu.pe", "password": "contrasena-segura"},
+            )
+        ).json()["access_token"]
+
+        r = await client.get(
+            f"/api/v1/executions/{suya}/compare",
+            params={"against": suya},
+            headers=_auth(ajeno),
+        )
+        assert r.status_code == 404
+
+
 class TestMembresiaDelProyecto:
     """El permiso viene de la relacion con el proyecto, no de un rango.
 
@@ -1255,9 +1384,48 @@ class TestMembresiaDelProyecto:
         miembros = (
             await client.get(f"/api/v1/projects/{pid}/members", headers=_auth(token))
         ).json()
+        # Con el correo: sin el, la lista son identificadores de treinta y
+        # seis caracteres y no hay pantalla que construir con eso.
         assert miembros == [
-            {"user_id": miembros[0]["user_id"], "role": "administrador", "invited_by": None}
+            {
+                "user_id": miembros[0]["user_id"],
+                "email": "desarrollador@upc.edu.pe",
+                "role": "administrador",
+                "invited_by": None,
+            }
         ]
+
+    async def test_se_invita_por_correo(self, client):
+        """Es lo que quien invita tiene a mano: nadie conoce de memoria el
+        identificador de un compañero."""
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        _, ajeno = await self._cuenta(client, "porcorreo@upc.edu.pe")
+
+        r = await client.post(
+            f"/api/v1/projects/{pid}/members",
+            params={"email": "porcorreo@upc.edu.pe"},
+            headers=_auth(dueno),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["role"] == "miembro"
+
+        visibles = {
+            p["id"]
+            for p in (await client.get("/api/v1/projects", headers=_auth(ajeno))).json()
+        }
+        assert pid in visibles
+
+    async def test_un_correo_sin_cuenta_lo_dice(self, client):
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        r = await client.post(
+            f"/api/v1/projects/{pid}/members",
+            params={"email": "nadie@upc.edu.pe"},
+            headers=_auth(dueno),
+        )
+        assert r.status_code == 404
+        assert "regístrese" in r.text or "registre" in r.text
 
     async def test_el_invitado_entra_como_miembro(self, client):
         dueno = await _token(client, "desarrollador")

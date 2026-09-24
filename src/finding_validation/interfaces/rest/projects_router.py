@@ -21,6 +21,7 @@ from ...infrastructure.persistence.membership_repository import (
     SqlMembershipRepository,
 )
 from ..schemas.schemas import ProjectRequest, ProjectResponse
+from ....iam.infrastructure.persistence.models import UserRow
 from ....iam.interfaces.rest.dependencies import UserDep
 from ....shared.rest import SessionDep
 
@@ -140,30 +141,57 @@ async def create_project(
 async def list_members(
     project_id: UUID, session: SessionDep, user: UserDep
 ) -> list[dict]:
-    """Quién está en el proyecto. Solo lo ven sus miembros."""
+    """Quién está en el proyecto. Solo lo ven sus miembros.
+
+    Con el correo de cada uno. Sin él la lista son identificadores de treinta y
+    seis caracteres, y no hay pantalla que se pueda construir con eso.
+    """
     miembros = SqlMembershipRepository(session)
     if await miembros.role_of(project_id, user.user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese proyecto")
+    filas = await miembros.members_of(project_id)
+    correos = dict(
+        (
+            await session.execute(
+                select(UserRow.id, UserRow.email).where(
+                    UserRow.id.in_([str(m.user_id) for m in filas] or [""])
+                )
+            )
+        ).all()
+    )
     return [
         {
             "user_id": str(m.user_id),
+            "email": correos.get(str(m.user_id), ""),
             "role": m.role.value,
             "invited_by": str(m.invited_by) if m.invited_by else None,
         }
-        for m in await miembros.members_of(project_id)
+        for m in filas
     ]
 
 
 @router.post("/{project_id}/members", status_code=status.HTTP_201_CREATED)
 async def invite_member(
-    project_id: UUID, user_id: UUID, session: SessionDep, user: UserDep
+    project_id: UUID,
+    session: SessionDep,
+    user: UserDep,
+    user_id: UUID | None = None,
+    email: str | None = None,
 ) -> dict:
     """Invita a alguien al proyecto, como miembro.
+
+    Por correo o por identificador. Por correo porque es lo que quien invita
+    tiene a mano: nadie conoce de memoria el identificador de un compañero.
 
     Solo el administrador. Y no se responde «no eres administrador» a quien no
     pertenece al proyecto: eso ya confirmaría que existe, así que se responde
     lo mismo que si no existiera.
     """
+    if (user_id is None) == (email is None):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Hace falta el correo de a quién invitar, o su identificador",
+        )
     miembros = SqlMembershipRepository(session)
     mio = await miembros.role_of(project_id, user.user_id)
     if mio is None:
@@ -173,6 +201,19 @@ async def invite_member(
             status.HTTP_403_FORBIDDEN,
             "Invitar al proyecto es cosa de su administrador",
         )
+    if email is not None:
+        fila = (
+            await session.execute(
+                select(UserRow.id).where(UserRow.email == email.strip().lower())
+            )
+        ).scalar_one_or_none()
+        if fila is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"No hay ninguna cuenta con el correo {email}. Pídele que se "
+                "registre primero.",
+            )
+        user_id = UUID(fila)
     if await miembros.role_of(project_id, user_id) is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Esa persona ya está en el proyecto"
