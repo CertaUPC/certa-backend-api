@@ -1,14 +1,19 @@
 """Proyectos, que es lo que agrupa las ejecuciones.
 
-Se identifican por ruta de repositorio, que es única: volver a cargarla devuelve
-el proyecto que ya existe, para que las corridas de un mismo código no queden
-repartidas entre dos filas.
+Se identifican por ruta de repositorio dentro de su dueño: volver a cargarla
+devuelve el proyecto que ya existe, para que las corridas de un mismo código no
+queden repartidas entre dos filas.
+
+DENTRO DE SU DUEÑO, y ahí está la diferencia. La ruta era única globalmente, de
+modo que dos clientes que analizaran «/repos/mi-app» compartían proyecto y, con
+él, los hallazgos del otro. Los conjuntos públicos no tienen dueño y los ve
+todo el mundo, que es lo que se espera de OWASP Benchmark.
 """
 
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from ....shared.database import ExecutionRow, ProjectRow
 from ..schemas.schemas import ProjectRequest, ProjectResponse
@@ -32,9 +37,17 @@ def _to_response(row: ProjectRow, executions: int) -> ProjectResponse:
 
 @router.get("", response_model=list[ProjectResponse])
 async def list_projects(session: SessionDep, user: UserDep) -> list[ProjectResponse]:
-    """Proyectos con su número de ejecuciones, el más reciente primero."""
+    """Los proyectos de quien pregunta, el más reciente primero.
+
+    Los públicos entran en la lista de todos; los ajenos no aparecen.
+    """
+    mios = ProjectRow.owner_id == str(user.user_id) if user.user_id else False
     rows = (
-        await session.execute(select(ProjectRow).order_by(ProjectRow.created_at.desc()))
+        await session.execute(
+            select(ProjectRow)
+            .where(or_(mios, ProjectRow.is_public_dataset.is_(True)))
+            .order_by(ProjectRow.created_at.desc())
+        )
     ).scalars().all()
 
     # Un solo agrupamiento en lugar de una consulta por proyecto.
@@ -60,7 +73,11 @@ async def create_project(
     ruta = body.repository_path.strip() or body.name.strip()
     existente = (
         await session.execute(
-            select(ProjectRow).where(ProjectRow.repository_path == ruta)
+            select(ProjectRow).where(
+                ProjectRow.repository_path == ruta,
+                ProjectRow.owner_id == str(user.user_id) if user.user_id else
+                ProjectRow.owner_id.is_(None),
+            )
         )
     ).scalar_one_or_none()
     if existente is not None:
@@ -77,6 +94,11 @@ async def create_project(
         language=body.language,
         repository_path=ruta,
         is_public_dataset=body.is_public_dataset,
+        # Un conjunto publico no es de nadie: lo ve todo el mundo y por eso no
+        # lleva dueno. Lo demas pertenece a quien lo creo.
+        owner_id=None if body.is_public_dataset else (
+            str(user.user_id) if user.user_id else None
+        ),
     )
     session.add(row)
     await session.commit()

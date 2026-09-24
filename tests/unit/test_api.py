@@ -154,12 +154,28 @@ async def _procesar(client: AsyncClient) -> None:
 
 
 async def _token(client: AsyncClient, role: str = "investigador") -> str:
+    """Una cuenta con el rol pedido.
+
+    El alta ya no reparte roles: crea siempre el de menor privilegio, porque
+    dejar elegir el propio convertia el registro publico en una puerta a los
+    datos ajenos. Aqui el rol se pone en la base directamente, que es lo que
+    hace un ayudante de pruebas; por la interfaz lo concede un lider_tecnico.
+    """
     email = f"{role}@upc.edu.pe"
     await client.post(
         "/api/v1/auth/register",
         json={"email": email, "password": "contrasena-segura"},
-        params={"role": role},
     )
+    if role != "desarrollador":
+        from sqlalchemy import update as _update
+
+        from src.iam.infrastructure.persistence.models import UserRow
+
+        async with app.state.container.sessions() as s:
+            await s.execute(
+                _update(UserRow).where(UserRow.email == email).values(role=role)
+            )
+            await s.commit()
     r = await client.post(
         "/api/v1/auth/login",
         json={"email": email, "password": "contrasena-segura"},
@@ -483,12 +499,12 @@ class TestExperiment:
         token = await _token(client)
         r = await client.post(
             "/api/v1/experiment/participants",
-            json={"anonymous_code": "P01", "years_of_experience": 3, "consented": True},
+            json={"anonymous_code": "P01", "experience_band": "de_1_a_3", "consented": True},
             headers=_auth(token),
         )
         assert r.status_code == 201
         body = r.json()
-        assert body["experience_band"] == "intermedio"
+        assert body["experience_band"] == "de_1_a_3"
         assert len(body["order"]) == 2
         assert body["first_batch"] != body["second_batch"]
 
@@ -496,7 +512,7 @@ class TestExperiment:
         token = await _token(client)
         r = await client.post(
             "/api/v1/experiment/participants",
-            json={"anonymous_code": "P02", "years_of_experience": 3, "consented": False},
+            json={"anonymous_code": "P02", "experience_band": "de_1_a_3", "consented": False},
             headers=_auth(token),
         )
         assert r.status_code == 422
@@ -510,7 +526,7 @@ class TestExperiment:
                 "/api/v1/experiment/participants",
                 json={
                     "anonymous_code": f"P{n:02d}",
-                    "years_of_experience": 3,
+                    "experience_band": "de_1_a_3",
                     "consented": True,
                 },
                 headers=_auth(token),
@@ -521,7 +537,7 @@ class TestExperiment:
 
     async def test_rejects_duplicate_code(self, client):
         token = await _token(client)
-        payload = {"anonymous_code": "P01", "years_of_experience": 3, "consented": True}
+        payload = {"anonymous_code": "P01", "experience_band": "de_1_a_3", "consented": True}
         await client.post(
             "/api/v1/experiment/participants", json=payload, headers=_auth(token)
         )
@@ -543,7 +559,7 @@ class TestExperiment:
                 "/api/v1/experiment/participants",
                 json={
                     "anonymous_code": "PT1",
-                    "years_of_experience": 3,
+                    "experience_band": "de_1_a_3",
                     "consented": True,
                 },
                 headers=_auth(token),
@@ -567,7 +583,7 @@ class TestExperiment:
                 "/api/v1/experiment/participants",
                 json={
                     "anonymous_code": "PT2",
-                    "years_of_experience": 3,
+                    "experience_band": "de_1_a_3",
                     "consented": True,
                 },
                 headers=_auth(token),
@@ -599,7 +615,7 @@ class TestExperiment:
                 "/api/v1/experiment/participants",
                 json={
                     "anonymous_code": "PT3",
-                    "years_of_experience": 3,
+                    "experience_band": "de_1_a_3",
                     "consented": True,
                 },
                 headers=_auth(token),
@@ -632,7 +648,7 @@ class TestExperiment:
                 "/api/v1/experiment/participants",
                 json={
                     "anonymous_code": "P01",
-                    "years_of_experience": 3,
+                    "experience_band": "de_1_a_3",
                     "consented": True,
                 },
                 headers=_auth(token),
@@ -852,4 +868,336 @@ class TestAuditoriaDelProducto:
             json={"value": "quizas", "seconds": 1.0},
             headers=_auth(token),
         )
+        assert r.status_code == 422
+
+
+class TestCredencialesAcotadas:
+    """El recorrido completo de una credencial por la interfaz.
+
+    Lo que se comprueba aquí no es solo que el canje funcione, sino que el
+    token que devuelve no sirva para lo que no está acotado.
+    """
+
+    async def test_se_emite_y_se_canjea(self, client):
+        cabecera = {"Authorization": f"Bearer {await _token(client)}"}
+        r = await client.post(
+            "/api/v1/auth/grants",
+            json={
+                "subject_kind": "worker",
+                "subject_id": str(PROJECT_ID),
+                "label": "portátil de prueba",
+            },
+            headers=cabecera,
+        )
+        assert r.status_code == 201, r.text
+        emitida = r.json()
+        assert emitida["token"].startswith("certa_wk_")
+
+        canje = await client.post(
+            "/api/v1/auth/token", json={"token": emitida["token"]}
+        )
+        assert canje.status_code == 200, canje.text
+        assert canje.json()["role"] == "worker"
+
+    async def test_el_token_del_canje_no_abre_lo_que_exige_cuenta(self, client):
+        """La propiedad que sostiene el acotamiento.
+
+        Si una credencial de participación pasara una comprobación de rol,
+        quien tuviera el enlace de una sesión leería la lista de participantes
+        y las ejecuciones de todos.
+        """
+        cabecera = {"Authorization": f"Bearer {await _token(client)}"}
+        emitida = (
+            await client.post(
+                "/api/v1/auth/grants",
+                json={"subject_kind": "participation", "subject_id": "p-1"},
+                headers=cabecera,
+            )
+        ).json()
+        acotado = (
+            await client.post(
+                "/api/v1/auth/token", json={"token": emitida["token"]}
+            )
+        ).json()["access_token"]
+
+        r = await client.get(
+            "/api/v1/experiment/participants",
+            headers={"Authorization": f"Bearer {acotado}"},
+        )
+        assert r.status_code == 403
+        assert "cuenta de persona" in r.json()["detail"]
+
+    async def test_una_credencial_no_emite_otra(self, client):
+        """Si pudiera, quien obtuviera una de participación se fabricaría la
+        del trabajador y el acotamiento no serviría de nada."""
+        cabecera = {"Authorization": f"Bearer {await _token(client)}"}
+        emitida = (
+            await client.post(
+                "/api/v1/auth/grants",
+                json={"subject_kind": "participation", "subject_id": "p-1"},
+                headers=cabecera,
+            )
+        ).json()
+        acotado = (
+            await client.post(
+                "/api/v1/auth/token", json={"token": emitida["token"]}
+            )
+        ).json()["access_token"]
+
+        r = await client.post(
+            "/api/v1/auth/grants",
+            json={"subject_kind": "worker", "subject_id": str(PROJECT_ID)},
+            headers={"Authorization": f"Bearer {acotado}"},
+        )
+        assert r.status_code == 403
+
+    async def test_revocada_deja_de_canjearse(self, client):
+        cabecera = {"Authorization": f"Bearer {await _token(client)}"}
+        emitida = (
+            await client.post(
+                "/api/v1/auth/grants",
+                json={"subject_kind": "worker", "subject_id": str(PROJECT_ID)},
+                headers=cabecera,
+            )
+        ).json()
+        assert (
+            await client.post(
+                "/api/v1/auth/token", json={"token": emitida["token"]}
+            )
+        ).status_code == 200
+
+        borrado = await client.delete(
+            f"/api/v1/auth/grants/{emitida['id']}", headers=cabecera
+        )
+        assert borrado.status_code == 204
+
+        r = await client.post(
+            "/api/v1/auth/token", json={"token": emitida["token"]}
+        )
+        assert r.status_code == 401
+
+    async def test_el_motivo_del_rechazo_no_se_detalla(self, client):
+        """Decir «venció» y no «no existe» ya confirma que existió."""
+        inventado = "certa_wk_" + "a" * 32 + "_" + "b" * 64
+        r = await client.post("/api/v1/auth/token", json={"token": inventado})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "La credencial no es válida"
+
+    async def test_se_listan_para_poder_revocarlas(self, client):
+        cabecera = {"Authorization": f"Bearer {await _token(client)}"}
+        await client.post(
+            "/api/v1/auth/grants",
+            json={"subject_kind": "worker", "subject_id": str(PROJECT_ID)},
+            headers=cabecera,
+        )
+        r = await client.get(
+            "/api/v1/auth/grants",
+            params={"subject_kind": "worker", "subject_id": str(PROJECT_ID)},
+            headers=cabecera,
+        )
+        assert r.status_code == 200
+        assert len(r.json()) == 1
+        assert r.json()[0]["active"] is True
+        # El token no vuelve a salir por ninguna vía.
+        assert "token" not in r.json()[0]
+
+
+class TestElAltaNoRepartePapeles:
+    """El agujero que el alta publica dejaba abierto.
+
+    Registrarse solo no era el problema: un producto se registra solo. El
+    problema era que el rol viajaba en la peticion, de modo que cualquiera que
+    conociera la direccion se daba de alta como investigador y con eso leia los
+    hallazgos ajenos, la lista de participantes y sus decisiones.
+    """
+
+    async def test_quien_se_registra_recibe_el_menor_privilegio(self, client):
+        r = await client.post(
+            "/api/v1/auth/register",
+            json={"email": "cualquiera@upc.edu.pe", "password": "contrasena-segura"},
+        )
+        assert r.status_code == 201
+        assert r.json()["role"] == "desarrollador"
+
+    async def test_pedirse_un_rol_no_sirve_de_nada(self, client):
+        """El parametro ya no existe; si alguien lo manda, se ignora."""
+        r = await client.post(
+            "/api/v1/auth/register",
+            json={"email": "listillo@upc.edu.pe", "password": "contrasena-segura"},
+            params={"role": "lider_tecnico"},
+        )
+        assert r.status_code == 201
+        assert r.json()["role"] == "desarrollador"
+
+    async def test_el_rol_lo_concede_quien_ya_tiene_el_mayor(self, client):
+        lider = await _token(client, "lider_tecnico")
+        alta = (
+            await client.post(
+                "/api/v1/auth/register",
+                json={"email": "nuevo@upc.edu.pe", "password": "contrasena-segura"},
+            )
+        ).json()
+
+        r = await client.patch(
+            f"/api/v1/auth/users/{alta['id']}/role",
+            params={"role": "investigador"},
+            headers=_auth(lider),
+        )
+        assert r.status_code == 200
+        assert r.json()["role"] == "investigador"
+
+    async def test_un_desarrollador_no_se_asciende_a_si_mismo(self, client):
+        suyo = await _token(client, "desarrollador")
+        alta = (
+            await client.post(
+                "/api/v1/auth/register",
+                json={"email": "otro@upc.edu.pe", "password": "contrasena-segura"},
+            )
+        ).json()
+        r = await client.patch(
+            f"/api/v1/auth/users/{alta['id']}/role",
+            params={"role": "lider_tecnico"},
+            headers=_auth(suyo),
+        )
+        assert r.status_code == 403
+
+    async def test_un_investigador_tampoco_reparte_papeles(self, client):
+        """Ni siquiera quien tiene acceso a los datos del estudio."""
+        suyo = await _token(client, "investigador")
+        alta = (
+            await client.post(
+                "/api/v1/auth/register",
+                json={"email": "tercero@upc.edu.pe", "password": "contrasena-segura"},
+            )
+        ).json()
+        r = await client.patch(
+            f"/api/v1/auth/users/{alta['id']}/role",
+            params={"role": "investigador"},
+            headers=_auth(suyo),
+        )
+        assert r.status_code == 403
+
+
+class TestNadieVeLoAjeno:
+    """El aislamiento entre clientes.
+
+    Antes, cualquiera autenticado listaba las ejecuciones de todos, y cada
+    hallazgo arrastra el fragmento de codigo que se envio al modelo. Con el
+    alta publica de entonces, eso era: registrarse y leer el codigo ajeno.
+    """
+
+    async def _proyecto_de(self, client, quien, ruta):
+        token = await _token(client, quien)
+        r = await client.post(
+            "/api/v1/projects",
+            json={
+                "name": f"App de {quien}",
+                "language": "java",
+                "repository_path": ruta,
+                "is_public_dataset": False,
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code in (200, 201), r.text
+        return token, r.json()
+
+    async def test_dos_clientes_con_la_misma_ruta_no_comparten_proyecto(self, client):
+        """Era el fallo mas silencioso: el segundo recibia el proyecto del
+        primero y creia que era suyo."""
+        _, uno = await self._proyecto_de(client, "investigador", "/repos/mi-app")
+        _, otro = await self._proyecto_de(client, "lider_tecnico", "/repos/mi-app")
+        assert uno["id"] != otro["id"]
+
+    async def test_el_listado_no_trae_proyectos_ajenos(self, client):
+        await self._proyecto_de(client, "investigador", "/repos/suyo")
+        token_ajeno, _ = await self._proyecto_de(
+            client, "lider_tecnico", "/repos/otro"
+        )
+        rutas = {
+            p["repository_path"]
+            for p in (
+                await client.get("/api/v1/projects", headers=_auth(token_ajeno))
+            ).json()
+        }
+        assert "/repos/otro" in rutas
+        assert "/repos/suyo" not in rutas
+
+    async def test_los_conjuntos_publicos_los_ve_todo_el_mundo(self, client):
+        """Un conjunto de referencia no es de nadie: si no se viera, cada
+        cliente tendria que cargarse su propio OWASP Benchmark."""
+        token = await _token(client, "investigador")
+        rutas = {
+            p["repository_path"]
+            for p in (
+                await client.get("/api/v1/projects", headers=_auth(token))
+            ).json()
+        }
+        assert "/repos/bench" in rutas
+
+    async def test_el_listado_de_ejecuciones_tampoco(self, client):
+        await self._proyecto_de(client, "investigador", "/repos/con-ejecucion")
+        token_ajeno = await _token(client, "lider_tecnico")
+        r = await client.get("/api/v1/executions", headers=_auth(token_ajeno))
+        assert r.status_code == 200
+        ajenas = [e for e in r.json() if e.get("project_name") == "App de investigador"]
+        assert not ajenas
+
+
+class TestLaFichaDecideLaParticipacion:
+    """La ficha del anexo B, recogida por la herramienta.
+
+    Vivia en un formulario aparte, y eso dejaba dos cosas al aire. La pregunta
+    del rol de seguridad activa el criterio de exclusion del apartado 4.4, de
+    modo que dependia de que alguien leyera la hoja de respuestas ANTES de
+    dejar empezar. Y la experiencia es factor de control del analisis: cruzarla
+    despues por un codigo tecleado a mano es donde se pierden filas.
+    """
+
+    async def _alta(self, client, **campos):
+        token = await _token(client)
+        cuerpo = {
+            "anonymous_code": "F01",
+            "experience_band": "de_4_a_7",
+            "consented": True,
+            **campos,
+        }
+        return await client.post(
+            "/api/v1/experiment/participants", json=cuerpo, headers=_auth(token)
+        )
+
+    async def test_el_rol_de_seguridad_impide_la_participacion(self, client):
+        """Es la pregunta que decide. Antes nunca llegaba, siempre valia falso
+        y la regla del dominio no podia dispararse."""
+        r = await self._alta(client, has_security_role=True)
+        assert r.status_code == 422
+        assert "seguridad de aplicaciones" in r.json()["detail"]
+
+    async def test_sin_rol_de_seguridad_se_registra(self, client):
+        r = await self._alta(client, has_security_role=False)
+        assert r.status_code == 201
+
+    async def test_la_banda_es_la_que_pregunta_la_ficha(self, client):
+        """Guardar un entero obligaba a inventar un numero que nadie dio: la
+        ficha pregunta por tramos."""
+        r = await self._alta(client, experience_band="mas_de_7")
+        assert r.status_code == 201
+        assert r.json()["experience_band"] == "mas_de_7"
+
+    async def test_una_banda_inventada_se_rechaza(self, client):
+        r = await self._alta(client, experience_band="bastante")
+        assert r.status_code == 422
+
+    async def test_el_resto_de_la_ficha_se_guarda(self, client):
+        r = await self._alta(
+            client,
+            main_language="Java",
+            alert_frequency="semanal",
+            security_training="autodidacta",
+        )
+        assert r.status_code == 201
+
+    async def test_una_frecuencia_fuera_del_contrato_se_rechaza(self, client):
+        """Un valor libre dejaria entrar cualquier cadena en una columna que el
+        analisis va a usar como factor."""
+        r = await self._alta(client, alert_frequency="de vez en cuando")
         assert r.status_code == 422
