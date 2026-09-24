@@ -13,6 +13,11 @@ y la persona sigue sentada, dispuesta a repetirla.
   sin esa bandera     retira ademas el alta y las credenciales. Es lo que
                       corresponde a un rastro de ensayo.
 
+  --huerfanas         sin --code. Retira las credenciales de participacion
+                      que apuntan a alguien que ya no esta en la tabla. Las
+                      deja cualquier ensayo en el que se emitio el acceso y
+                      despues se retiro a la persona.
+
 Lo que se borra se vuelca antes a un JSON con la fecha, de modo que un borrado
 por equivocacion se pueda reconstruir. El volcado NO va al repositorio: lleva
 la ficha del participante.
@@ -27,6 +32,7 @@ queda una credencial senalando a quien ya no existe.
     py tools/reset_participant.py --code P-00 --despliegue --dry-run
     py tools/reset_participant.py --code P-00 --despliegue
     py tools/reset_participant.py --code P-04 --despliegue --solo-decisiones
+    py tools/reset_participant.py --huerfanas --despliegue --dry-run
 """
 
 import argparse
@@ -93,16 +99,55 @@ async def recoger(conexion, participante_id: str) -> dict:
     return volcado
 
 
+SUELTAS = """
+    select g.* from access_grants g
+     where g.subject_kind = 'participation'
+       and not exists (select 1 from participants p where p.id = g.subject_id)
+"""
+
+
+async def huerfanas(conexion, args) -> int:
+    """Credenciales de participacion que ya no apuntan a nadie."""
+    filas = await conexion.fetch(SUELTAS)
+    print(f"\ncredenciales sin dueño: {len(filas)}")
+    for f in filas:
+        estado = "revocada" if f["revoked_at"] else "VIGENTE"
+        print(f"  {f['id'][:12]}…  {estado}  emitida {f['created_at']}")
+    if not filas:
+        return 0
+    if args.dry_run:
+        print("\nSIMULACRO: no se borró nada")
+        return 0
+
+    sello = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    destino = RAIZ / f"retirado-huerfanas-{sello}.json"
+    destino.write_text(
+        json.dumps(
+            [{k: serializable(v) for k, v in dict(f).items()} for f in filas],
+            ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8")
+    print(f"\nvolcado: {destino.name}")
+    borradas = await conexion.execute(
+        "delete from access_grants g where g.subject_kind = 'participation' "
+        "and not exists (select 1 from participants p where p.id = "
+        "g.subject_id)")
+    print(f"  {borradas}")
+    return 0
+
+
 async def main(args) -> int:
     url = url_del_despliegue() if args.despliegue else (
         args.url or "postgresql://postgres@localhost/certa")
-    codigo = normalizar(args.code)
 
     print(f"base:   {'DESPLIEGUE' if args.despliegue else url.split('@')[-1]}")
-    print(f"código: {codigo}")
 
     conexion = await asyncpg.connect(url)
     try:
+        if args.huerfanas:
+            return await huerfanas(conexion, args)
+
+        codigo = normalizar(args.code)
+        print(f"código: {codigo}")
         fila = await conexion.fetchrow(
             "select id, anonymous_code, is_pilot, consented_at "
             "from participants where anonymous_code = $1",
@@ -187,7 +232,9 @@ async def main(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--code", required=True, help="Código anónimo, «P-00»")
+    p.add_argument("--code", help="Código anónimo, «P-00»")
+    p.add_argument("--huerfanas", action="store_true",
+                   help="retira las credenciales que ya no apuntan a nadie")
     p.add_argument("--despliegue", action="store_true",
                    help="obra sobre la base de arriba y no sobre la local")
     p.add_argument("--url", help="Cadena de conexión, si no es el despliegue")
@@ -201,4 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    raise SystemExit(asyncio.run(main(build_parser().parse_args())))
+    argumentos = build_parser().parse_args()
+    if not argumentos.code and not argumentos.huerfanas:
+        sys.exit("Hace falta --code, o --huerfanas para las sueltas")
+    raise SystemExit(asyncio.run(main(argumentos)))
