@@ -54,7 +54,7 @@ class SqlAccessGrantRepository:
         que existe, y una credencial vencida que sigue en la lista dice algo
         distinto de una que nunca se emitió.
         """
-        filas = (
+        rows = (
             await self._session.execute(
                 select(AccessGrantRow)
                 .where(
@@ -64,7 +64,7 @@ class SqlAccessGrantRepository:
                 .order_by(AccessGrantRow.created_at.desc())
             )
         ).scalars()
-        return [self._to_entity(f) for f in filas]
+        return [self._to_entity(f) for f in rows]
 
     async def touch(self, grant_id: str) -> None:
         """Anota que se usó.

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from ....shared.rest import ContainerDep, SessionDep
-from ...domain.access_grant import GrantKind, InvalidGrant, acunar, leer
+from ...domain.access_grant import GrantKind, InvalidGrant, mint, parse
 from ...infrastructure.persistence.grant_repository import (
     SqlAccessGrantRepository,
 )
@@ -143,13 +143,13 @@ async def issue_grant(
 
     from datetime import timedelta
 
-    vigencia = timedelta(days=body.days) if body.days else ...
-    grant, token = acunar(
+    lifetime = timedelta(days=body.days) if body.days else ...
+    grant, token = mint(
         subject_kind=tipo,
         subject_id=body.subject_id,
         issued_by=str(user.user_id) if user.user_id else None,
         label=body.label,
-        vigencia=vigencia,
+        lifetime=lifetime,
     )
     await SqlAccessGrantRepository(session).save(grant)
     return GrantResponse(
@@ -208,15 +208,15 @@ async def exchange_grant(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        tipo, identificador, secreto = leer(body.token)
+        tipo, identifier, secret = parse(body.token)
     except InvalidGrant as exc:
         raise invalida from exc
 
     repo = SqlAccessGrantRepository(session)
-    grant = await repo.get(identificador)
-    if grant is None or grant.subject_kind is not tipo or not grant.coincide(secreto):
+    grant = await repo.get(identifier)
+    if grant is None or grant.subject_kind is not tipo or not grant.matches(secret):
         raise invalida
-    if grant.motivo_de_rechazo() is not None:
+    if grant.rejection_reason() is not None:
         raise invalida
 
     await repo.touch(grant.id)

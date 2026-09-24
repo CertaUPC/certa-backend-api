@@ -56,11 +56,11 @@ def batch_fingerprint(findings: list) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def write_scorecard(destino: Path, filas: list[dict]) -> None:
+def write_scorecard(destino: Path, rows: list[dict]) -> None:
     with destino.open("w", encoding="utf-8", newline="") as archivo:
-        escritor = csv.DictWriter(archivo, fieldnames=list(filas[0].keys()))
+        escritor = csv.DictWriter(archivo, fieldnames=list(rows[0].keys()))
         escritor.writeheader()
-        escritor.writerows(filas)
+        escritor.writerows(rows)
 
 
 def write_verdicts(destino: Path, verdicts: list, findings: list) -> None:
@@ -100,7 +100,7 @@ def write_verdicts(destino: Path, verdicts: list, findings: list) -> None:
             ])
 
 
-def build_manifest(contexto: RunContext, filas: list[dict], acuerdo: float) -> dict:
+def build_manifest(contexto: RunContext, rows: list[dict], acuerdo: float) -> dict:
     etiquetados = [f for f in contexto.findings if f.has_known_truth]
     reales = sum(1 for f in etiquetados if f.known_truth)
     ejecucion = contexto.execution
@@ -139,14 +139,14 @@ def build_manifest(contexto: RunContext, filas: list[dict], acuerdo: float) -> d
         },
         "resultado": {
             "acuerdo_entre_corridas": round(acuerdo, 4),
-            "consultas": sum(f["consultas"] for f in filas),
-            "usd": round(sum(f["usd"] for f in filas), 4),
-            "corridas": len(filas),
+            "consultas": sum(f["consultas"] for f in rows),
+            "usd": round(sum(f["usd"] for f in rows), 4),
+            "corridas": len(rows),
         },
     }
 
 
-def export(destino: Path, contexto: RunContext, filas: list[dict],
+def export(destino: Path, contexto: RunContext, rows: list[dict],
            verdicts: list, acuerdo: float) -> list[Path]:
     """Escribe el paquete y devuelve los archivos que dejó."""
     destino.mkdir(parents=True, exist_ok=True)
@@ -154,10 +154,10 @@ def export(destino: Path, contexto: RunContext, filas: list[dict],
     detalle = destino / "verdicts.csv"
     manifiesto = destino / "manifest.json"
 
-    write_scorecard(cuadro, filas)
+    write_scorecard(cuadro, rows)
     write_verdicts(detalle, verdicts, contexto.findings)
     manifiesto.write_text(
-        json.dumps(build_manifest(contexto, filas, acuerdo), indent=2, ensure_ascii=False),
+        json.dumps(build_manifest(contexto, rows, acuerdo), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     return [cuadro, detalle, manifiesto]

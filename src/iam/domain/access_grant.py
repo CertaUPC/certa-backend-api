@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from uuid import uuid4
 
-PREFIJO = "certa"
+PREFIX = "certa"
 
 
 class GrantKind(str, Enum):
@@ -59,11 +59,11 @@ class GrantKind(str, Enum):
     PARTICIPATION = "participation"
 
     @property
-    def abreviatura(self) -> str:
+    def abbreviation(self) -> str:
         return "wk" if self is GrantKind.WORKER else "pt"
 
     @property
-    def vigencia_por_omision(self) -> timedelta | None:
+    def default_lifetime(self) -> timedelta | None:
         """Cuánto vive la credencial si nadie dice otra cosa.
 
         La del trabajador dura porque se instala una vez, pero no es eterna: un
@@ -74,23 +74,23 @@ class GrantKind(str, Enum):
         return timedelta(days=90) if self is GrantKind.WORKER else timedelta(hours=12)
 
     @classmethod
-    def desde_abreviatura(cls, corto: str) -> "GrantKind":
+    def from_abbreviation(cls, short: str) -> "GrantKind":
         for k in cls:
-            if k.abreviatura == corto:
+            if k.abbreviation == short:
                 return k
-        raise ValueError(f"Abreviatura de credencial desconocida: {corto!r}")
+        raise ValueError(f"Abreviatura de credencial desconocida: {short!r}")
 
 
 class InvalidGrant(ValueError):
     """La credencial no se pudo leer, no existe, venció o fue revocada."""
 
 
-def _ahora() -> datetime:
+def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _huella(secreto: str) -> str:
-    return hashlib.sha256(secreto.encode("utf-8")).hexdigest()
+def _digest(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -110,7 +110,7 @@ class AccessGrant:
     revoked_at: datetime | None = None
     last_used_at: datetime | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
-    created_at: datetime = field(default_factory=_ahora)
+    created_at: datetime = field(default_factory=_now)
 
     def __post_init__(self) -> None:
         if not self.subject_id or not self.subject_id.strip():
@@ -122,46 +122,46 @@ class AccessGrant:
         # PostgreSQL las devuelve con ella, de modo que comparar el
         # vencimiento reventaba en local y no en el despliegue. El invariante
         # se sostiene aquí y no en cada comparación: lo que se guardó es UTC.
-        for campo in ("created_at", "expires_at", "revoked_at", "last_used_at"):
-            valor = getattr(self, campo)
-            if valor is not None and valor.tzinfo is None:
-                object.__setattr__(self, campo, valor.replace(tzinfo=timezone.utc))
+        for field_name in ("created_at", "expires_at", "revoked_at", "last_used_at"):
+            value = getattr(self, field_name)
+            if value is not None and value.tzinfo is None:
+                object.__setattr__(self, field_name, value.replace(tzinfo=timezone.utc))
 
     @property
     def is_active(self) -> bool:
-        return self.motivo_de_rechazo() is None
+        return self.rejection_reason() is None
 
-    def motivo_de_rechazo(self, momento: datetime | None = None) -> str | None:
+    def rejection_reason(self, at: datetime | None = None) -> str | None:
         """Por qué no sirve, o None si sirve.
 
         Devuelve el motivo en vez de un booleano porque el registro de quien
         rechaza una credencial necesita saber si venció o si fue revocada: son
         situaciones distintas y solo una es un incidente.
         """
-        momento = momento or _ahora()
+        at = at or _now()
         if self.revoked_at is not None:
             return "La credencial fue revocada"
-        if self.expires_at is not None and self.expires_at <= momento:
+        if self.expires_at is not None and self.expires_at <= at:
             return "La credencial venció"
         return None
 
-    def coincide(self, secreto: str) -> bool:
+    def matches(self, secret: str) -> bool:
         """Comparación en tiempo constante, para no filtrar el secreto por el
         tiempo que tarda en fallar."""
-        return hmac.compare_digest(self.secret_hash, _huella(secreto))
+        return hmac.compare_digest(self.secret_hash, _digest(secret))
 
-    def revocar(self, momento: datetime | None = None) -> None:
+    def revoke(self, at: datetime | None = None) -> None:
         """Se marca, no se borra. Hace falta poder decir que existió."""
         if self.revoked_at is None:
-            self.revoked_at = momento or _ahora()
+            self.revoked_at = at or _now()
 
 
-def acunar(
+def mint(
     subject_kind: GrantKind,
     subject_id: str,
     issued_by: str | None = None,
     label: str | None = None,
-    vigencia: timedelta | None = ...,  # type: ignore[assignment]
+    lifetime: timedelta | None = ...,  # type: ignore[assignment]
 ) -> tuple[AccessGrant, str]:
     """Crea la credencial y devuelve (entidad, token en claro).
 
@@ -172,22 +172,22 @@ def acunar(
     `vigencia` sin declarar toma la de su tipo; `None` explícito crea una
     credencial sin vencimiento, que solo se apaga revocándola.
     """
-    if vigencia is ...:
-        vigencia = subject_kind.vigencia_por_omision
-    secreto = secrets.token_hex(32)
+    if lifetime is ...:
+        lifetime = subject_kind.default_lifetime
+    secret = secrets.token_hex(32)
     grant = AccessGrant(
         subject_kind=subject_kind,
         subject_id=subject_id,
-        secret_hash=_huella(secreto),
+        secret_hash=_digest(secret),
         issued_by=issued_by,
         label=label,
-        expires_at=_ahora() + vigencia if vigencia else None,
+        expires_at=_now() + lifetime if lifetime else None,
     )
-    token = f"{PREFIJO}_{subject_kind.abreviatura}_{grant.id}_{secreto}"
+    token = f"{PREFIX}_{subject_kind.abbreviation}_{grant.id}_{secret}"
     return grant, token
 
 
-def leer(token: str) -> tuple[GrantKind, str, str]:
+def parse(token: str) -> tuple[GrantKind, str, str]:
     """Descompone un token en (tipo, identificador, secreto).
 
     Se parte en cuatro y no más, porque el secreto es lo último y no puede
@@ -197,13 +197,13 @@ def leer(token: str) -> tuple[GrantKind, str, str]:
     del secreto es cosa de la entidad, contra la huella guardada.
     """
     partes = token.strip().split("_", 3)
-    if len(partes) != 4 or partes[0] != PREFIJO:
+    if len(partes) != 4 or partes[0] != PREFIX:
         raise InvalidGrant("El token no tiene la forma de una credencial de Certa")
-    _, corto, identificador, secreto = partes
+    _, short, identifier, secret = partes
     try:
-        tipo = GrantKind.desde_abreviatura(corto)
+        tipo = GrantKind.from_abbreviation(short)
     except ValueError as exc:
         raise InvalidGrant(str(exc)) from exc
-    if not identificador or not secreto:
+    if not identifier or not secret:
         raise InvalidGrant("El token está incompleto")
-    return tipo, identificador, secreto
+    return tipo, identifier, secret

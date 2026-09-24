@@ -853,10 +853,10 @@ class TestAuditoriaDelProducto:
     async def test_rectificar_no_sobrescribe(self, client):
         """Sin historial no se distingue una primera impresión de una conclusión."""
         token, hallazgo = await self._un_hallazgo(client)
-        for valor in ("descartado", "confirmado"):
+        for value in ("descartado", "confirmado"):
             await client.post(
                 f"/api/v1/executions/findings/{hallazgo}/audit",
-                json={"value": valor, "seconds": 4.0},
+                json={"value": value, "seconds": 4.0},
                 headers=_auth(token),
             )
         r = await client.get(
@@ -1102,14 +1102,14 @@ class TestNadieVeLoAjeno:
     alta publica de entonces, eso era: registrarse y leer el codigo ajeno.
     """
 
-    async def _proyecto_de(self, client, quien, ruta):
+    async def _proyecto_de(self, client, quien, path):
         token = await _token(client, quien)
         r = await client.post(
             "/api/v1/projects",
             json={
                 "name": f"App de {quien}",
                 "language": "java",
-                "repository_path": ruta,
+                "repository_path": path,
                 "is_public_dataset": False,
             },
             headers=_auth(token),
@@ -1228,10 +1228,10 @@ class TestMembresiaDelProyecto:
     usar la herramienta.
     """
 
-    async def _proyecto(self, client, token, ruta="/repos/mio"):
+    async def _proyecto(self, client, token, path="/repos/mio"):
         r = await client.post(
             "/api/v1/projects",
-            json={"name": "Mio", "repository_path": ruta},
+            json={"name": "Mio", "repository_path": path},
             headers=_auth(token),
         )
         assert r.status_code in (200, 201), r.text

@@ -23,7 +23,7 @@ from . import prompt_builder
 logger = logging.getLogger(__name__)
 
 
-def _verificacion_tls(ruta: str = ""):
+def _verificacion_tls(path: str = ""):
     """Certificado con el que verificar al proveedor.
 
     httpx valida contra el almacen de certifi, que no incluye las autoridades
@@ -35,13 +35,13 @@ def _verificacion_tls(ruta: str = ""):
     Se admite un paquete propio por entorno. Devolver True mantiene el
     comportamiento habitual donde no hay interceptacion.
     """
-    ruta = ruta or os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
-    if ruta and os.path.isfile(ruta):
-        return ruta
-    if ruta:
+    path = path or os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+    if path and os.path.isfile(path):
+        return path
+    if path:
         logger.warning(
             "El certificado indicado no existe: %s. Se usa la verificación "
-            "por omisión.", ruta,
+            "por omisión.", path,
         )
     return True
 
@@ -84,15 +84,15 @@ def _extract_json(raw: str | None) -> dict:
         raise ProviderEmptyResponse(
             "El proveedor no devolvió contenido en la respuesta"
         )
-    texto = raw.strip()
-    if texto.startswith("```"):
-        texto = texto.strip("`")
-        if texto.lower().startswith("json"):
-            texto = texto[4:]
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
     try:
-        return json.loads(texto)
+        return json.loads(text)
     except json.JSONDecodeError:
-        match = _JSON_BLOCK.search(texto)
+        match = _JSON_BLOCK.search(text)
         if not match:
             raise ModelContractViolation(
                 "La respuesta no contiene ningún objeto JSON"
@@ -128,12 +128,12 @@ def parse_judgement(
             f"La respuesta no es un objeto sino {type(data).__name__}"
         )
 
-    valor = data.get("value")
-    if not isinstance(valor, str) or not valor.strip():
+    value = data.get("value")
+    if not isinstance(value, str) or not value.strip():
         raise ModelContractViolation("Falta el campo 'value' o no es texto")
 
-    texto = data.get("justification_text")
-    if not isinstance(texto, str) or not texto.strip():
+    text = data.get("justification_text")
+    if not isinstance(text, str) or not text.strip():
         raise ModelContractViolation("Falta el campo 'justification_text'")
 
     lineas_crudas = data.get("cited_lines", [])
@@ -155,8 +155,8 @@ def parse_judgement(
                 confianza = None
 
     return ModelJudgement(
-        value=valor.strip().lower(),
-        justification_text=texto.strip(),
+        value=value.strip().lower(),
+        justification_text=text.strip(),
         cited_lines=lineas,
         confidence=confianza,
         input_tokens=input_tokens,

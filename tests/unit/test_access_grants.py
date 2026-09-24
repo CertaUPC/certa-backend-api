@@ -18,8 +18,8 @@ from src.iam.domain.access_grant import (
     AccessGrant,
     GrantKind,
     InvalidGrant,
-    acunar,
-    leer,
+    mint,
+    parse,
 )
 from src.iam.infrastructure.persistence.grant_repository import (
     SqlAccessGrantRepository,
@@ -50,29 +50,29 @@ class TestAcunado:
         Sin el identificador dentro, comprobar un token obligaría a recorrer la
         tabla entera cifrando fila por fila.
         """
-        grant, token = acunar(GrantKind.WORKER, "proyecto-1")
-        tipo, identificador, secreto = leer(token)
+        grant, token = mint(GrantKind.WORKER, "proyecto-1")
+        tipo, identifier, secret = parse(token)
         assert tipo is GrantKind.WORKER
-        assert identificador == grant.id
-        assert grant.coincide(secreto)
+        assert identifier == grant.id
+        assert grant.matches(secret)
 
     def test_el_secreto_no_queda_en_la_entidad(self):
-        grant, token = acunar(GrantKind.PARTICIPATION, "p-1")
-        _, _, secreto = leer(token)
+        grant, token = mint(GrantKind.PARTICIPATION, "p-1")
+        _, _, secret = parse(token)
         # Ni el secreto ni el token entero aparecen en lo que se persiste.
-        assert secreto not in repr(grant)
+        assert secret not in repr(grant)
         assert token not in repr(grant)
         assert len(grant.secret_hash) == 64
 
     def test_el_secreto_de_otra_credencial_no_casa(self):
         """Dos credenciales del mismo sujeto no se sirven la una a la otra."""
-        grant, _ = acunar(GrantKind.WORKER, "proyecto-1")
-        otro, token_del_otro = acunar(GrantKind.WORKER, "proyecto-1")
-        _, _, secreto_del_otro = leer(token_del_otro)
+        grant, _ = mint(GrantKind.WORKER, "proyecto-1")
+        otro, token_del_otro = mint(GrantKind.WORKER, "proyecto-1")
+        _, _, secreto_del_otro = parse(token_del_otro)
 
-        assert otro.coincide(secreto_del_otro)
-        assert not grant.coincide(secreto_del_otro)
-        assert not grant.coincide("0" * 64)
+        assert otro.matches(secreto_del_otro)
+        assert not grant.matches(secreto_del_otro)
+        assert not grant.matches("0" * 64)
 
     @pytest.mark.parametrize(
         "malo",
@@ -81,25 +81,25 @@ class TestAcunado:
     )
     def test_un_token_deforme_se_rechaza(self, malo):
         with pytest.raises(InvalidGrant):
-            leer(malo)
+            parse(malo)
 
     def test_la_vigencia_depende_del_tipo(self):
         """La del trabajador se instala una vez; la de participación cubre una
         sesión y no tiene por qué servir al día siguiente."""
-        w, _ = acunar(GrantKind.WORKER, "proyecto-1")
-        p, _ = acunar(GrantKind.PARTICIPATION, "p-1")
+        w, _ = mint(GrantKind.WORKER, "proyecto-1")
+        p, _ = mint(GrantKind.PARTICIPATION, "p-1")
         assert w.expires_at > p.expires_at
 
     def test_se_puede_emitir_sin_vencimiento_a_proposito(self):
-        g, _ = acunar(GrantKind.WORKER, "proyecto-1", vigencia=None)
+        g, _ = mint(GrantKind.WORKER, "proyecto-1", lifetime=None)
         assert g.expires_at is None
         assert g.is_active
 
 
 class TestVigencia:
     def test_revocar_marca_y_no_borra(self):
-        g, _ = acunar(GrantKind.WORKER, "proyecto-1")
-        g.revocar()
+        g, _ = mint(GrantKind.WORKER, "proyecto-1")
+        g.revoke()
         assert g.revoked_at is not None
         assert not g.is_active
 
@@ -118,14 +118,14 @@ class TestVigencia:
             secret_hash="a" * 64,
             revoked_at=datetime.now(timezone.utc),
         )
-        assert "venció" in vencida.motivo_de_rechazo()
-        assert "revocada" in revocada.motivo_de_rechazo()
+        assert "venció" in vencida.rejection_reason()
+        assert "revocada" in revocada.rejection_reason()
 
     def test_revocar_dos_veces_conserva_la_primera_fecha(self):
-        g, _ = acunar(GrantKind.WORKER, "proyecto-1")
-        g.revocar()
+        g, _ = mint(GrantKind.WORKER, "proyecto-1")
+        g.revoke()
         primera = g.revoked_at
-        g.revocar()
+        g.revoke()
         assert g.revoked_at == primera
 
 
@@ -174,7 +174,7 @@ class TestLoQueLaCredencialNoAutoriza:
 class TestPersistencia:
     async def test_ida_y_vuelta(self, session):
         repo = SqlAccessGrantRepository(session)
-        grant, token = acunar(
+        grant, token = mint(
             GrantKind.WORKER, "proyecto-1", label="portátil de Ana"
         )
         await repo.save(grant)
@@ -183,12 +183,12 @@ class TestPersistencia:
         assert vuelto.subject_kind is GrantKind.WORKER
         assert vuelto.label == "portátil de Ana"
         # El secreto sigue casando después de pasar por la base.
-        _, _, secreto = leer(token)
-        assert vuelto.coincide(secreto)
+        _, _, secret = parse(token)
+        assert vuelto.matches(secret)
 
     async def test_revocar_se_persiste(self, session):
         repo = SqlAccessGrantRepository(session)
-        grant, _ = acunar(GrantKind.PARTICIPATION, "p-1")
+        grant, _ = mint(GrantKind.PARTICIPATION, "p-1")
         await repo.save(grant)
         assert await repo.revoke(grant.id)
         assert not (await repo.get(grant.id)).is_active
@@ -199,7 +199,7 @@ class TestPersistencia:
     async def test_se_anota_el_uso(self, session):
         """Una credencial activa que nadie esperaba se detecta por aquí."""
         repo = SqlAccessGrantRepository(session)
-        grant, _ = acunar(GrantKind.WORKER, "proyecto-1")
+        grant, _ = mint(GrantKind.WORKER, "proyecto-1")
         await repo.save(grant)
         assert (await repo.get(grant.id)).last_used_at is None
         await repo.touch(grant.id)
@@ -208,11 +208,11 @@ class TestPersistencia:
     async def test_se_listan_las_del_sujeto_y_solo_esas(self, session):
         repo = SqlAccessGrantRepository(session)
         for _ in range(2):
-            g, _ = acunar(GrantKind.WORKER, "proyecto-1")
+            g, _ = mint(GrantKind.WORKER, "proyecto-1")
             await repo.save(g)
-        otro, _ = acunar(GrantKind.WORKER, "proyecto-2")
+        otro, _ = mint(GrantKind.WORKER, "proyecto-2")
         await repo.save(otro)
-        participacion, _ = acunar(GrantKind.PARTICIPATION, "proyecto-1")
+        participacion, _ = mint(GrantKind.PARTICIPATION, "proyecto-1")
         await repo.save(participacion)
 
         de_uno = await repo.list_for(GrantKind.WORKER, "proyecto-1")
@@ -240,6 +240,6 @@ class TestFechasSinZona:
 
     async def test_la_vuelta_de_la_base_no_revienta(self, session):
         repo = SqlAccessGrantRepository(session)
-        grant, _ = acunar(GrantKind.WORKER, "proyecto-1")
+        grant, _ = mint(GrantKind.WORKER, "proyecto-1")
         await repo.save(grant)
         assert (await repo.get(grant.id)).is_active

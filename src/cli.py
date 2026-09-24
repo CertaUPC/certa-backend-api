@@ -76,7 +76,7 @@ async def cmd_analyze(args: argparse.Namespace) -> int:
     container = Container(settings)
     await _ensure_schema(container)
 
-    ruta = str(Path(args.path).resolve())
+    path = str(Path(args.path).resolve())
 
     if args.sarif:
         # El analizador ya corrió y su salida está en disco. Correrlo otra vez
@@ -97,8 +97,8 @@ async def cmd_analyze(args: argparse.Namespace) -> int:
         version_reglas = analyzer.ruleset_version
         try:
             with correlate() as cid:
-                print(f"Analizando {ruta}  (correlación {cid})")
-                findings = await analyzer.analyze(ruta)
+                print(f"Analizando {path}  (correlación {cid})")
+                findings = await analyzer.analyze(path)
         except AnalyzerUnavailable as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -112,7 +112,7 @@ async def cmd_analyze(args: argparse.Namespace) -> int:
     )
     admitidos = scope.apply(findings)
 
-    project_id = await _project_id(container, args.project or Path(ruta).name, ruta)
+    project_id = await _project_id(container, args.project or Path(path).name, path)
 
     async with container.sessions() as s:
         execution = Execution(
@@ -286,7 +286,7 @@ async def cmd_compare(args: argparse.Namespace) -> int:
             )
 
     verdad = {f.id: f.known_truth for f in findings if f.has_known_truth}
-    filas = _scorecard(comparacion, verdad)
+    rows = _scorecard(comparacion, verdad)
 
     # El costo se recalcula con la tarifa de cada modelo. El guardia de
     # presupuesto lleva un solo par de precios, que le basta para cortar una
@@ -295,11 +295,11 @@ async def cmd_compare(args: argparse.Namespace) -> int:
         registrados = await SqlVerdictRepository(s).list_by_execution(execution.id)
     del_lote = {f.id for f in findings}
     _aplicar_costo_real(
-        filas, [v for v in registrados if v.finding_id in del_lote],
+        rows, [v for v in registrados if v.finding_id in del_lote],
         args.model, settings,
     )
 
-    _print_scorecard(filas, comparacion)
+    _print_scorecard(rows, comparacion)
 
     if args.out_dir:
         contexto = RunContext(
@@ -313,11 +313,11 @@ async def cmd_compare(args: argparse.Namespace) -> int:
             prompt_version=str(container.prompt_version),
         )
         escritos = export(
-            Path(args.out_dir), contexto, filas, registrados, comparacion.agreement()
+            Path(args.out_dir), contexto, rows, registrados, comparacion.agreement()
         )
         print("Paquete de la corrida:")
-        for ruta in escritos:
-            print(f"  {ruta}")
+        for path in escritos:
+            print(f"  {path}")
         print()
 
     await container.dispose()
@@ -342,18 +342,18 @@ def _scorecard(comparacion, verdad: dict) -> list[dict]:
     leída sola, premiaría al modelo que solo se pronuncia sobre lo fácil.
     """
     calculador = MetricsCalculator()
-    filas = []
+    rows = []
     for run in comparacion.runs:
         con_etiqueta = [
-            (fid, valor) for fid, valor in run.verdicts.items() if fid in verdad
+            (fid, value) for fid, value in run.verdicts.items() if fid in verdad
         ]
         pares = [
-            (verdad[fid], valor is VerdictValue.EXPLOITABLE)
-            for fid, valor in con_etiqueta
-            if valor in _SE_PRONUNCIA
+            (verdad[fid], value is VerdictValue.EXPLOITABLE)
+            for fid, value in con_etiqueta
+            if value in _SE_PRONUNCIA
         ]
         matriz = calculador.confusion(pares)
-        filas.append({
+        rows.append({
             "modelo": run.model,
             "repeticion": run.repetition,
             "veredictos": len(run.verdicts),
@@ -371,10 +371,10 @@ def _scorecard(comparacion, verdad: dict) -> list[dict]:
             "usd": round(run.usd, 4),
             **matriz.report(),
         })
-    return filas
+    return rows
 
 
-def _aplicar_costo_real(filas: list[dict], verdicts: list, modelos: list[str],
+def _aplicar_costo_real(rows: list[dict], verdicts: list, modelos: list[str],
                         settings) -> None:
     """Sustituye el costo nominal por el que de verdad cobra cada modelo.
 
@@ -398,7 +398,7 @@ def _aplicar_costo_real(filas: list[dict], verdicts: list, modelos: list[str],
               file=sys.stderr)
 
     por_corrida = costs_by_run(verdicts, tarifas)
-    for fila in filas:
+    for fila in rows:
         datos = None
         for (modelo, _, rep), valores in por_corrida.items():
             if modelo == fila["modelo"] and rep == fila["repeticion"]:
@@ -412,13 +412,13 @@ def _aplicar_costo_real(filas: list[dict], verdicts: list, modelos: list[str],
             fila["usd"] = datos["usd"]
 
 
-def _print_scorecard(filas: list[dict], comparacion) -> None:
+def _print_scorecard(rows: list[dict], comparacion) -> None:
     # La cobertura va junto a la F1 y no en una nota al pie: las tres primeras
     # columnas describen solo la parte del lote que el modelo resolvió, y
     # leerlas sin saber cuánta parte es eso lleva a conclusiones falsas.
     print(f"\n{'modelo':<34} {'rep':>4} {'F1':>7} {'prec':>7} {'exh':>7} "
           f"{'cobert':>7} {'anclaje':>8} {'USD':>8}")
-    for f in filas:
+    for f in rows:
         print(f"{f['modelo']:<34} {f['repeticion']:>4} {f['f1']:>7.3f} "
               f"{f['precision']:>7.3f} {f['exhaustividad']:>7.3f} "
               f"{f['cobertura']:>7.3f} "
@@ -427,7 +427,7 @@ def _print_scorecard(filas: list[dict], comparacion) -> None:
           "el modelo resolvió.\nLa cobertura dice qué proporción del lote es esa.")
     print(f"\nAcuerdo entre corridas: {comparacion.agreement():.4f}")
     print(f"Desacuerdos: {len(comparacion.disagreements())}")
-    print(f"Costo total: {sum(f['usd'] for f in filas):.4f} USD\n")
+    print(f"Costo total: {sum(f['usd'] for f in rows):.4f} USD\n")
 
 
 async def cmd_check(args: argparse.Namespace) -> int:

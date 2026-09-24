@@ -101,16 +101,16 @@ def _read_expected_results(path: Path) -> dict[str, BenchmarkCase]:
     return casos
 
 
-def _test_name(texto: str) -> str | None:
+def _test_name(text: str) -> str | None:
     """El identificador del caso, venga de una ruta o de la columna del CSV."""
-    match = _TEST_NAME.search(texto)
+    match = _TEST_NAME.search(text)
     return match.group(0).lower() if match else None
 
 
-def _cwe_number(texto: str | None) -> int | None:
-    if not texto:
+def _cwe_number(text: str | None) -> int | None:
+    if not text:
         return None
-    match = _CWE_NUMBER.search(texto)
+    match = _CWE_NUMBER.search(text)
     return int(match.group(1)) if match else None
 
 
