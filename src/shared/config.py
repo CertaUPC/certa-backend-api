@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiration_minutes: int = 480
 
+    # El primer lider tecnico. Se crea al arrancar solo si no hay ninguna
+    # cuenta, y nunca despues. Sin esto, cerrar el alta por rol dejaria el
+    # despliegue sin nadie capaz de conceder roles, que es el estado en que
+    # queda una base recien migrada.
+    seed_admin_email: str = ""
+    seed_admin_password: str = ""
+
     # -- proveedor de modelo ----------------------------------------------
     llm_base_url: str = ""
     llm_api_key: str = ""

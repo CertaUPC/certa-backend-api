@@ -1,6 +1,7 @@
 """Arranque del servicio. El cableado vive en `shared/composition.py`."""
 
 import logging
+from uuid import uuid4
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -27,6 +28,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def sembrar_primer_administrador(container, settings) -> None:
+    """Crea el primer lider tecnico si la base no tiene ninguna cuenta.
+
+    Solo entonces. Si ya hay cuentas no toca nada, de modo que reiniciar el
+    servicio no puede recrear una cuenta que alguien retiro a proposito ni
+    devolverle la contrasena original.
+    """
+    if not settings.seed_admin_email or not settings.seed_admin_password:
+        return
+    from sqlalchemy import func, select as _select
+
+    from .iam.infrastructure.persistence.models import UserRow
+    from .iam.infrastructure.security import hash_password
+
+    async with container.sessions() as s:
+        cuantas = await s.scalar(_select(func.count()).select_from(UserRow))
+        if cuantas:
+            return
+        s.add(
+            UserRow(
+                id=str(uuid4()),
+                email=settings.seed_admin_email.lower().strip(),
+                password_hash=hash_password(settings.seed_admin_password),
+                role="lider_tecnico",
+            )
+        )
+        await s.commit()
+    logger.info("Primera cuenta creada: %s", settings.seed_admin_email)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -41,6 +72,8 @@ async def lifespan(app: FastAPI):
         async with container.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Esquema creado en modo depuración")
+
+    await sembrar_primer_administrador(container, settings)
 
     logger.info(
         "Certa listo. Proveedor de modelo: %s. Origenes admitidos: %s",

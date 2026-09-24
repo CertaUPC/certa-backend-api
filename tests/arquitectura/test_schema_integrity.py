@@ -31,6 +31,10 @@ CRUCES_DE_CONTEXTO = {
     ("session_batch_items", "finding_id"),
     ("transformations", "original_finding_id"),
     ("transformations", "transformed_finding_id"),
+    # La credencial apunta a un proyecto o a un participante segun su tipo.
+    # Ponerle clave foranea obligaria al contexto de acceso a conocer los dos
+    # esquemas ajenos, que es justo lo que la extraccion de iam deshizo.
+    ("access_grants", "subject_id"),
 }
 
 # Columnas que acaban en _id y no son referencias a nada de este esquema.
