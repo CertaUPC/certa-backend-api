@@ -1440,3 +1440,131 @@ class TestEntradaDelParticipante:
             "/api/v1/auth/participant", json={"anonymous_code": "P01"}
         )
         assert r.status_code == 401
+
+
+class TestLaSesionDelParticipante:
+    """Lo que su credencial tiene que alcanzar, y nada mas.
+
+    Es el recorrido entero de una sesion: recibir la ejecucion sobre la que
+    corre el estudio, pedir el lote, escribir la decision y anotar la
+    presentacion. Que faltara uno solo de esos permisos no se notaba hasta
+    tener al participante delante.
+    """
+
+    async def _estudio(self, client, codigo="P01"):
+        """Una ejecucion con su lote congelado y un participante dentro."""
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        hallazgos = (
+            await client.get(
+                f"/api/v1/executions/{eid}/findings", headers=_auth(token)
+            )
+        ).json()
+
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlBatchRepository,
+        )
+
+        async with app.state.container.sessions() as s:
+            await SqlBatchRepository(s).replace_all([(hallazgos[0]["id"], "A", 0)])
+
+        alta = (
+            await client.post(
+                "/api/v1/experiment/participants",
+                json={
+                    "anonymous_code": codigo,
+                    "experience_band": "de_1_a_3",
+                    "consented": True,
+                },
+                headers=_auth(token),
+            )
+        ).json()
+        await client.post(
+            "/api/v1/auth/grants",
+            json={
+                "subject_kind": "participation",
+                "subject_id": alta["participant_id"],
+            },
+            headers=_auth(token),
+        )
+        suyo = (
+            await client.post(
+                "/api/v1/auth/participant", json={"anonymous_code": codigo}
+            )
+        ).json()
+        return eid, hallazgos[0]["id"], alta, suyo
+
+    async def test_recibe_la_ejecucion_sobre_la_que_corre_el_estudio(self, client):
+        """Sin ella la pantalla de sesion no sabe que hallazgos pedir, y el
+        participante no tiene por que escribirla en la direccion."""
+        eid, _, _, suyo = await self._estudio(client)
+        assert suyo["execution_id"] == eid
+
+    async def test_alcanza_el_lote_con_su_propia_credencial(self, client):
+        _, finding_id, _, suyo = await self._estudio(client)
+        cabeceras = _auth(suyo["access_token"])
+
+        resumen = await client.get("/api/v1/experiment/batches", headers=cabeceras)
+        assert resumen.status_code == 200, resumen.text
+        assert resumen.json()["lotes"] == {"A": 1}
+
+        mitad = await client.get("/api/v1/experiment/batches/A", headers=cabeceras)
+        assert mitad.status_code == 200, mitad.text
+        assert mitad.json()["hallazgos"] == [finding_id]
+
+    async def test_escribe_su_decision_y_no_la_de_otro(self, client):
+        _, finding_id, alta, suyo = await self._estudio(client)
+        cabeceras = _auth(suyo["access_token"])
+        cuerpo = {
+            "finding_id": finding_id,
+            "participant_id": alta["participant_id"],
+            "value": "confirmado",
+            "seconds": 12.5,
+            "condition": "con_asistente",
+        }
+
+        mia = await client.post(
+            "/api/v1/experiment/decisions", json=cuerpo, headers=cabeceras
+        )
+        assert mia.status_code == 201, mia.text
+
+        ajena = await client.post(
+            "/api/v1/experiment/decisions",
+            json={**cuerpo, "participant_id": str(uuid4())},
+            headers=cabeceras,
+        )
+        assert ajena.status_code == 403
+
+    async def test_anota_su_presentacion_y_no_la_de_otro(self, client):
+        _, _, alta, suyo = await self._estudio(client)
+        cabeceras = _auth(suyo["access_token"])
+
+        mia = await client.post(
+            "/api/v1/experiment/sessions/theme",
+            json={"participant_id": alta["participant_id"], "theme": "dark"},
+            headers=cabeceras,
+        )
+        assert mia.status_code == 200, mia.text
+
+        ajena = await client.post(
+            "/api/v1/experiment/sessions/theme",
+            json={"participant_id": str(uuid4()), "theme": "dark"},
+            headers=cabeceras,
+        )
+        assert ajena.status_code == 403
+
+    async def test_lo_que_sigue_sin_alcanzar(self, client):
+        """El lote si, la lista de participantes no. Es lo que separa una
+        credencial acotada de una sesion prestada."""
+        _, _, _, suyo = await self._estudio(client)
+        cabeceras = _auth(suyo["access_token"])
+        for ruta in ("/api/v1/experiment/participants", "/api/v1/projects"):
+            r = await client.get(ruta, headers=cabeceras)
+            assert r.status_code == 403, f"{ruta} respondio {r.status_code}"

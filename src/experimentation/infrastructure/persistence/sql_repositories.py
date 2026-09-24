@@ -6,8 +6,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ....shared.database import FindingRow, WorklistItemRow, WorklistRow
 from ....shared.database_experiment import (
-    BatchItemRow,
     ParticipantRow,
     SessionRow,
     TransformationRow,
@@ -208,18 +208,47 @@ class SqlTransformationRepository:
 
 
 class SqlBatchRepository:
-    """El lote congelado de las sesiones, mitad por mitad."""
+    """El lote congelado de las sesiones, mitad por mitad.
+
+    Vive en `worklists`, que es la lista de trabajo del producto, y no en una
+    tabla propia del estudio. Lo que distingue al lote es `frozen_at`: el
+    protocolo exige fijarlo antes de reclutar, y una lista del producto se
+    reordena cuando quiera.
+    """
+
+    NOMBRE = "Lote del estudio"
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def _frozen(self) -> WorklistRow | None:
+        return (
+            await self._session.execute(
+                select(WorklistRow)
+                .where(WorklistRow.frozen_at.is_not(None))
+                .order_by(WorklistRow.frozen_at.desc())
+            )
+        ).scalars().first()
+
+    async def execution_id(self) -> UUID | None:
+        """Sobre qué ejecución corre el estudio. La pantalla de sesión la
+        necesita para pedir los hallazgos, y el participante no la sabe."""
+        lista = await self._frozen()
+        return UUID(lista.execution_id) if lista else None
+
     async def finding_ids(self, batch: str) -> list[UUID]:
         """Los hallazgos de una mitad, en el orden registrado."""
+        lista = await self._frozen()
+        if lista is None:
+            return []
         filas = (
             await self._session.execute(
-                select(BatchItemRow)
-                .where(BatchItemRow.batch == batch)
-                .order_by(BatchItemRow.position)
+                select(WorklistItemRow)
+                .where(
+                    WorklistItemRow.worklist_id == lista.id,
+                    WorklistItemRow.bucket == batch,
+                )
+                .order_by(WorklistItemRow.position)
             )
         ).scalars()
         return [UUID(f.finding_id) for f in filas]
@@ -227,10 +256,20 @@ class SqlBatchRepository:
     async def batches(self) -> dict[str, int]:
         """Cuantos hallazgos tiene cada mitad. Sirve para comprobar de un
         vistazo que el lote esta cargado antes de convocar a nadie."""
-        filas = (await self._session.execute(select(BatchItemRow))).scalars()
+        lista = await self._frozen()
+        if lista is None:
+            return {}
+        filas = (
+            await self._session.execute(
+                select(WorklistItemRow).where(
+                    WorklistItemRow.worklist_id == lista.id
+                )
+            )
+        ).scalars()
         cuenta: dict[str, int] = {}
         for f in filas:
-            cuenta[f.batch] = cuenta.get(f.batch, 0) + 1
+            if f.bucket:
+                cuenta[f.bucket] = cuenta.get(f.bucket, 0) + 1
         return dict(sorted(cuenta.items()))
 
     async def replace_all(self, items: list[tuple[str, str, int]]) -> int:
@@ -238,13 +277,42 @@ class SqlBatchRepository:
 
         Se reemplaza y no se anade: el lote es uno solo y dejar restos de una
         carga anterior produciria mitades de tamano equivocado sin que nada lo
-        delate.
+        delate. La ejecucion sale de los propios hallazgos, que es de donde el
+        que llama la sabe.
         """
-        await self._session.execute(delete(BatchItemRow))
+        await self._session.execute(delete(WorklistRow))
+        if not items:
+            await self._session.commit()
+            return 0
+
+        execution_id = (
+            await self._session.execute(
+                select(FindingRow.execution_id).where(
+                    FindingRow.id == items[0][0]
+                )
+            )
+        ).scalar_one_or_none()
+        if execution_id is None:
+            raise ValueError(
+                f"El hallazgo {items[0][0]} no esta en esta base, de modo que "
+                "no se sabe sobre que ejecucion se congela el lote"
+            )
+
+        lista = WorklistRow(
+            id=str(uuid4()),
+            execution_id=execution_id,
+            name=self.NOMBRE,
+            frozen_at=datetime.now(timezone.utc),
+        )
+        self._session.add(lista)
         for finding_id, batch, position in items:
             self._session.add(
-                BatchItemRow(
-                    finding_id=finding_id, batch=batch, position=position
+                WorklistItemRow(
+                    id=str(uuid4()),
+                    worklist_id=lista.id,
+                    finding_id=finding_id,
+                    bucket=batch,
+                    position=position,
                 )
             )
         await self._session.commit()

@@ -130,7 +130,7 @@ async def list_batches(session: SessionDep, user: UserDep) -> dict:
     dos mitades tienen el mismo tamano. Un lote a medias no se detecta durante
     la sesion: se detecta al analizar, cuando ya no tiene arreglo.
     """
-    user.require("investigador", "lider_tecnico")
+    user.require_study_access()
     cuenta = await SqlBatchRepository(session).batches()
     return {"lotes": cuenta, "total": sum(cuenta.values())}
 
@@ -143,13 +143,13 @@ async def batch_findings(batch: str, session: SessionDep, user: UserDep) -> dict
     serviria la ejecucion entera, y el participante veria el corpus completo en
     vez de los doce que le tocan.
     """
-    user.require("investigador", "lider_tecnico")
+    user.require_study_access()
     ids = await SqlBatchRepository(session).finding_ids(batch)
     if not ids:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
-            f"El lote {batch!r} no tiene hallazgos registrados. Cargalo con "
-            f"tools/load_session_batch.py antes de convocar.",
+            f"El lote {batch!r} no tiene hallazgos registrados. Congelalo y "
+            f"cargalo antes de convocar a nadie.",
         )
     return {"lote": batch, "hallazgos": [str(i) for i in ids]}
 
@@ -168,7 +168,7 @@ async def record_session_theme(
     la señal de que la presentación cambió a mitad de sesión, y aceptarlo
     borraría la evidencia de ese cambio.
     """
-    user.require("investigador", "lider_tecnico", "desarrollador")
+    user.require_study_access(body.participant_id)
 
     sessions = SqlSessionRepository(session)
     if not await sessions.record_theme(body.participant_id, body.theme):
@@ -196,7 +196,13 @@ async def record_decision(
     La condición se valida contra el objeto de valor del estudio y se guarda
     como texto: la tabla vive en el contexto de validación, que no conoce ese
     vocabulario ni tiene por qué.
+
+    Una credencial de participación solo escribe a su propio nombre. Sin eso,
+    quien tuviera una podría decidir por cualquier otro participante y la
+    variable principal dejaría de ser atribuible.
     """
+    user.require_study_access(body.participant_id)
+
     try:
         decision = Decision(
             finding_id=body.finding_id,

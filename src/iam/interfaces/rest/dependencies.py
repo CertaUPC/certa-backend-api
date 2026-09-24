@@ -94,6 +94,20 @@ class CurrentUser:
         """Trabajador acotado a ese proyecto y no a otro."""
         self._require_grant(GrantKind.WORKER, project_id, "operar sobre este proyecto")
 
+    def require_study_access(self, participant_id=None) -> None:
+        """Admite a quien dirige el estudio y a la propia participación.
+
+        La sesión del participante pide el lote, escribe sus decisiones y anota
+        su presentación. Exigir rol de cuenta ahí obligaba a prestarle una
+        sesión de investigador, que es el apaño que la credencial acotada vino
+        a quitar.
+        """
+        if self.kind == GrantKind.PARTICIPATION.value:
+            if participant_id is not None:
+                self.require_participation(participant_id)
+            return
+        self.require("investigador", "lider_tecnico")
+
     def require_participation(self, participant_id) -> None:
         """Participación de esa persona y no de otra: sin esto, una credencial
         podría escribir decisiones a nombre de cualquier otro participante."""

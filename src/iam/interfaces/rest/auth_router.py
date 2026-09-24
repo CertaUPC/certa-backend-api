@@ -271,6 +271,9 @@ async def participant_access(
     """
     from sqlalchemy import select as _select
 
+    from ....experimentation.infrastructure.persistence.sql_repositories import (
+        SqlBatchRepository,
+    )
     from ....shared.database_experiment import ParticipantRow, SessionRow
 
     negado = HTTPException(
@@ -325,4 +328,6 @@ async def participant_access(
         order=list(fila.condition_order or []),
         first_batch=fila.first_batch,
         second_batch=fila.second_batch,
+        execution_id=str(await SqlBatchRepository(session).execution_id() or "")
+        or None,
     )

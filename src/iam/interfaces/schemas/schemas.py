@@ -85,3 +85,6 @@ class ParticipantAccessResponse(BaseModel):
     order: list[str]
     first_batch: str
     second_batch: str
+    # Sobre que ejecucion corre el estudio. Sale del lote congelado y no del
+    # participante, que no tiene por que saberla ni escribirla en la direccion.
+    execution_id: str | None = None
