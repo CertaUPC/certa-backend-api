@@ -378,39 +378,20 @@ class ProjectMemberRow(Base):
 class DecisionRow(Base):
     """Alguien decidió algo sobre un hallazgo, en un tiempo.
 
-    ANTES ERAN DOS TABLAS, y la separación estaba razonada. `audits` guardaba
-    la decisión del producto y `decisions` la medición del experimento, con el
-    argumento de que juntarlas obligaba a inventar un participante y una
-    condición cada vez que alguien usara la herramienta fuera del estudio, y
-    que eso impedía retirar la instrumentación al terminar la tesis.
+    Funde `audits` y `decisions`, que guardaban el mismo acto y se
+    distinguían solo en a quién identificaban. `participant_id`, `condition`
+    y `worklist_id` admiten nulos, de modo que una fila del producto no carga
+    ni una columna del experimento.
 
-    QUÉ REVIERTE ESA DECISIÓN. Que el acto es el mismo, y mantenerlo en dos
-    sitios hacía que el experimento corriera por un camino paralelo al del
-    producto en lugar de ser un caso suyo, con la lógica de rectificación
-    escrita dos veces en sitios que podían divergir. La objeción de la
-    invención se atiende sin fundir nada a la fuerza: `participant_id`,
-    `condition` y `worklist_id` admiten nulos, de modo que una fila del
-    producto no carga ni una columna del experimento. Retirar la
-    instrumentación pasa de borrar una tabla a quitar tres columnas nulables.
+    Se llama `decisions` porque es la palabra que el acta y el protocolo usan
+    para la variable principal, y porque «auditoría» ya nombra aquí el
+    registro de los once datos que reconstruyen un veredicto.
 
-    SE LLAMA `decisions` Y NO `audits` porque es la palabra que el acta, el
-    protocolo y el artículo emplean para la variable principal, «exactitud de
-    la decisión», y porque «auditoría» ya nombra otra cosa en este trabajo: el
-    registro auditable con los once datos que reconstruyen cómo se produjo un
-    veredicto.
-
-    LA CLAVE AL PARTICIPANTE SE CONSERVA, aunque cruce la frontera del
-    contexto de experimentación y la regla general de este esquema sea
-    referenciar por identidad al cruzarla. La razón no es de diseño sino del
-    consentimiento informado: admite retirarse en cualquier momento, y si al
-    borrar al participante sus decisiones quedaran, el borrado no habría sido
-    tal. El borrado en cascada lo garantiza el motor; dejarlo a cargo de la
-    aplicación es justo lo que el objetivo primero reprochó a MongoDB.
-
-    El precio es que quien cree el esquema tiene que registrar también las
-    tablas del estudio. Es el mismo precio que ya se paga con las cuentas, que
-    `executions` referencia, y se paga igual: importándolas en cada punto de
-    entrada.
+    La clave al participante se conserva aunque cruce la frontera del contexto
+    de experimentación, donde la regla es referenciar por identidad: el
+    consentimiento admite retirarse, y sin cascada del motor el borrado no
+    sería tal. El precio es registrar también las tablas del estudio en cada
+    punto de entrada, igual que ya ocurre con las cuentas.
     """
 
     __tablename__ = "decisions"

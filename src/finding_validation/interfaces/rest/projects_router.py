@@ -4,10 +4,10 @@ Se identifican por ruta de repositorio dentro de su dueño: volver a cargarla
 devuelve el proyecto que ya existe, para que las corridas de un mismo código no
 queden repartidas entre dos filas.
 
-DENTRO DE SU DUEÑO, y ahí está la diferencia. La ruta era única globalmente, de
-modo que dos clientes que analizaran «/repos/mi-app» compartían proyecto y, con
-él, los hallazgos del otro. Los conjuntos públicos no tienen dueño y los ve
-todo el mundo, que es lo que se espera de OWASP Benchmark.
+Dentro de su dueño, y ahí está la diferencia: la ruta era única globalmente, de
+modo que dos clientes que analizaran «/repos/mi-app» compartían proyecto y con
+él los hallazgos del otro. Los conjuntos públicos no tienen dueño y los ve todo
+el mundo, que es lo que se espera de OWASP Benchmark.
 """
 
 from uuid import UUID, uuid4
@@ -168,7 +168,7 @@ async def invite_member(
     mio = await miembros.role_of(project_id, user.user_id)
     if mio is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese proyecto")
-    if not mio.administra:
+    if not mio.manages:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Invitar al proyecto es cosa de su administrador",
@@ -201,7 +201,7 @@ async def remove_member(
     mio = await miembros.role_of(project_id, user.user_id)
     if mio is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese proyecto")
-    if not mio.administra:
+    if not mio.manages:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Retirar del proyecto es cosa de su administrador",

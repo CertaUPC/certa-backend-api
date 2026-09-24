@@ -1,25 +1,18 @@
 """Una sola tabla de decisiones, y las listas de trabajo.
 
-FUNDE `audits` Y `decisions`. Guardaban el mismo acto, alguien decidio algo
-sobre un hallazgo en un tiempo, y se distinguian solo en a quien identificaban.
-Sostenerlo en dos sitios hacia que el estudio corriera por un camino paralelo
-al del producto en lugar de ser un caso suyo, con la logica de rectificacion
-escrita dos veces en sitios que podian divergir.
+Funde `audits` y `decisions`, que guardaban el mismo acto y se distinguian
+solo en a quien identificaban. Lo propio del estudio, participante, sesion,
+lote y condicion, admite ausencia, de modo que una decision del producto no
+carga ni una columna del experimento.
 
-Lo propio del estudio, participante, sesion, lote y condicion, admite ausencia,
-de modo que una decision del producto no carga ni una columna del experimento.
+Se recrean en vez de remendarse porque las dos estan vacias en local y en el
+despliegue, y recrear produce el esquema identico al que declara el modelo.
+Con datos dentro esta migracion no valdria: habria que trasvasarlos.
 
-SE RECREA EN VEZ DE REMENDARSE. Las dos tablas estan vacias en local y en el
-despliegue, asi que recrear produce un esquema identico al que declara el
-modelo, sin el rastro de ALTERs encadenados que SQLite ademas no admite sobre
-restricciones sin nombre. Si hubiera datos, esta migracion no valdria: habria
-que trasvasarlos.
-
-ANADE `worklists` Y `worklist_items`, que generalizan el lote congelado del
-estudio. Aqui `finding_id` si es clave foranea, a diferencia de
-`session_batch_items`, donde era una cadena suelta: cargar un lote en una base
-sin esos hallazgos funcionaba sin protestar y la sesion reventaba en la primera
-alerta.
+Anade tambien `worklists` y `worklist_items`, que generalizan el lote
+congelado del estudio. Aqui `finding_id` si es clave foranea, a diferencia de
+`session_batch_items`: cargar un lote en una base sin esos hallazgos
+funcionaba sin protestar y la sesion reventaba en la primera alerta.
 
 Revision ID: 1d733f89ff62
 Revises: e262fe51f9d8

@@ -1,19 +1,10 @@
 """Alguien decidió algo sobre un hallazgo, en un tiempo.
 
-ANTES ERAN DOS ENTIDADES. `Audit` vivía aquí y guardaba la decisión del
-producto; `Decision` vivía en experimentación y guardaba la medición del
-estudio. La separación estaba razonada: juntarlas parecía obligar a inventar un
-participante y una condición cada vez que alguien usara la herramienta fuera
-del estudio.
-
-QUÉ LA REVIERTE. Que el acto es el mismo, y sostenerlo en dos sitios hacía que
-el experimento corriera por un camino paralelo al del producto en lugar de ser
-un caso suyo, con la lógica de rectificación escrita dos veces. La objeción se
-atiende sin forzar nada: lo propio del estudio admite ausencia, de modo que una
-decisión del producto no carga ni un campo del experimento.
-
-VIVE EN VALIDACIÓN Y NO EN EXPERIMENTACIÓN porque el acto pertenece al
-producto. El estudio lo usa; no lo posee.
+Antes eran dos entidades, `Audit` aquí y `Decision` en experimentación, con la
+lógica de rectificación escrita dos veces. El acto es el mismo, así que lo
+propio del estudio admite ausencia y una decisión del producto no carga ni uno
+de esos campos. Vive en validación porque el acto pertenece al producto: el
+estudio lo usa, no lo posee.
 """
 
 from dataclasses import dataclass, field
@@ -21,20 +12,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import UUID, uuid4
 
-# Vocabulario del estudio que esta entidad guarda sin interpretar. Se declara
-# aquí como texto y no importando el objeto de valor de experimentación,
-# porque la dependencia iría en la dirección equivocada: el producto no
-# depende del experimento.
+# Se declara como texto y no importando el objeto de valor de experimentación,
+# porque el producto no depende del experimento.
 CONDICIONES = ("con_asistente", "sin_asistente")
 
 
 class DecisionValue(str, Enum):
-    """Lo que la persona resuelve sobre el hallazgo.
-
-    DOUBTFUL no es una negativa a decidir: es decidir que el hallazgo necesita
-    a alguien más. Se registra como tal y no se cuenta como descarte. Forzar el
-    binario produce respuestas inventadas, y la duda es un dato.
-    """
+    """DOUBTFUL no es negarse a decidir: es decidir que el hallazgo necesita a
+    alguien más. No se cuenta como descarte, porque la duda es un dato."""
 
     CONFIRMED = "confirmado"
     DISMISSED = "descartado"

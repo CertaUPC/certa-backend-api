@@ -28,12 +28,10 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Acceso"])
 
 ROLES = ("desarrollador", "investigador", "lider_tecnico")
 
-# Cuánto vive el JWT que se obtiene al canjear una credencial. Corto a
-# propósito: la credencial larga viaja una vez por sesión de trabajo en lugar
-# de en cada petición, y una revocación surte efecto cuando caduca el JWT en
-# curso. El del trabajador es el más corto porque se renueva solo; el de
-# participación cubre la sesión de sesenta minutos con holgura.
-VIGENCIA_DEL_CANJE = {
+# Cuánto vive el JWT del canje. Corto a propósito: la credencial larga viaja
+# una vez por sesión de trabajo y no en cada petición, y una revocación surte
+# efecto en cuanto caduca el JWT en curso.
+EXCHANGE_MINUTES = {
     GrantKind.WORKER: 30,
     GrantKind.PARTICIPATION: 120,
 }
@@ -72,15 +70,11 @@ async def login(
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(body: LoginRequest, session: SessionDep) -> dict:
-    """Alta de cuenta. Siempre con el rol de menor privilegio.
+    """Alta de cuenta, siempre con el rol de menor privilegio.
 
-    EL ROL YA NO SE PIDE. Antes viajaba como parametro y el alta era publica,
-    de modo que cualquiera que conociera la direccion podia darse de alta como
-    investigador y, con eso, leer los hallazgos ajenos, la lista de
-    participantes y sus decisiones. El alta abierta no era el problema: un
-    producto se registra solo. El problema era elegirse el rol.
-
-    Los roles con acceso a datos ajenos los concede quien ya tiene
+    El rol ya no se pide. Antes viajaba como parametro y el alta era publica,
+    de modo que cualquiera podia darse de alta como investigador y leer los
+    hallazgos ajenos. Los demas roles los concede quien ya tiene
     `lider_tecnico`, en el endpoint de mas abajo.
     """
     role = "desarrollador"
@@ -102,8 +96,8 @@ async def register(body: LoginRequest, session: SessionDep) -> dict:
     return {"id": user_id, "email": email, "role": role}
 
 
-def _resumen(g) -> GrantSummary:
-    def f(d):
+def _summary(g) -> GrantSummary:
+    def iso(d):
         return d.isoformat() if d else None
 
     return GrantSummary(
@@ -112,9 +106,9 @@ def _resumen(g) -> GrantSummary:
         subject_id=g.subject_id,
         label=g.label,
         created_at=g.created_at.isoformat(),
-        expires_at=f(g.expires_at),
-        revoked_at=f(g.revoked_at),
-        last_used_at=f(g.last_used_at),
+        expires_at=iso(g.expires_at),
+        revoked_at=iso(g.revoked_at),
+        last_used_at=iso(g.last_used_at),
         active=g.is_active,
     )
 
@@ -180,7 +174,7 @@ async def list_grants(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "Tipo de credencial desconocido"
         ) from exc
     grants = await SqlAccessGrantRepository(session).list_for(tipo, subject_id)
-    return [_resumen(g) for g in grants]
+    return [_summary(g) for g in grants]
 
 
 @router.delete("/grants/{grant_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -226,7 +220,7 @@ async def exchange_grant(
         subject=grant.subject_id,
         secret=container.settings.jwt_secret,
         algorithm=container.settings.jwt_algorithm,
-        minutes=VIGENCIA_DEL_CANJE[grant.subject_kind],
+        minutes=EXCHANGE_MINUTES[grant.subject_kind],
         kind=grant.subject_kind.value,
         grant=grant.id,
     )
@@ -265,21 +259,15 @@ async def participant_access(
 ) -> ParticipantAccessResponse:
     """Entrada del participante a su sesión, con su código anónimo.
 
-    QUÉ CONTROLA Y QUÉ NO, dicho sin adornos. El código no es un secreto: el
-    protocolo lo usa como identificador y quien dirige la sesión se lo dicta a
-    la persona. Lo que controla el acceso es que exista una credencial de
-    participación vigente para ese código, que el investigador emite al empezar
-    y que vence en horas. Fuera de esa ventana, el código no abre nada.
+    El código no es un secreto: el protocolo lo usa como identificador y quien
+    dirige la sesión se lo dicta. Lo que controla el acceso es que exista una
+    credencial de participación vigente para ese código, emitida al empezar y
+    vencida en horas. Darle cuenta y contraseña a cada participante
+    contradiría el consentimiento, que promete no recoger nada que le
+    identifique.
 
-    Esa es la protección que el contexto admite. La sesión ocurre en una sala
-    con quien dirige el estudio delante, y la alternativa, darle una cuenta con
-    contraseña a cada participante, contradice el consentimiento, que promete
-    que no se recoge nada que identifique a la persona.
-
-    LO QUE SÍ EVITA, y era el apaño que había: que el participante entre en el
-    navegador del investigador con la sesión de este abierta. Ahora se lleva
-    una credencial acotada a su participación, que no abre la lista de
-    participantes ni las ejecuciones de nadie.
+    Lo que evita es el apaño anterior, que el participante entrara en el
+    navegador del investigador con la sesión de este abierta.
     """
     from sqlalchemy import select as _select
 
@@ -327,7 +315,7 @@ async def participant_access(
         subject=participante.id,
         secret=container.settings.jwt_secret,
         algorithm=container.settings.jwt_algorithm,
-        minutes=VIGENCIA_DEL_CANJE[GrantKind.PARTICIPATION],
+        minutes=EXCHANGE_MINUTES[GrantKind.PARTICIPATION],
         kind=GrantKind.PARTICIPATION.value,
         grant=grant.id,
     )

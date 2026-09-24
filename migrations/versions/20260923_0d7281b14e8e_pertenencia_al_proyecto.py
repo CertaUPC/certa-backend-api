@@ -6,11 +6,10 @@ existia de verdad. El tercero, `desarrollador`, no podia siquiera crear un
 proyecto, de modo que quien se registraba no podia usar la herramienta.
 
 El documento de arquitectura ya describia la pertenencia al proyecto sin
-llamarla asi: del lider
-tecnico dice que «registra el proyecto, lanza el analisis y consulta en que
-quedo el trabajo de su equipo», y del desarrollador que «recibe la lista
-ordenada y decide sobre cada uno». Eso es lo que uno hace en su proyecto y lo
-que hace quien fue invitado a el.
+llamarla asi: del lider tecnico dice que «registra el proyecto, lanza el
+analisis y consulta en que quedo el trabajo de su equipo», y del desarrollador
+que «recibe la lista ordenada y decide sobre cada uno». Eso es lo que uno hace
+en su proyecto y lo que hace quien fue invitado a el.
 
 Quien crea el proyecto queda como su administrador, sin invitacion. El resto
 entra invitado. Los dos deciden sobre hallazgos; lo que solo puede el

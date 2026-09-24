@@ -461,11 +461,9 @@ class SqlDecisionRepository:
     decisiones vigentes sobre el mismo hallazgo, y entonces cual vale seria una
     cuestion de suerte.
 
-    LA VIGENCIA SE RETIRA POR AUTOR, no por hallazgo. El repositorio de
-    auditoria que este sustituye la retiraba mirando solo el hallazgo, de modo
-    que si dos personas revisaban el mismo, la segunda anulaba a la primera sin
-    quererlo. En un uso de un solo equipo no se notaba; con varios clientes es
-    perdida de datos ajenos.
+    La vigencia se retira por autor y no por hallazgo. El repositorio anterior
+    miraba solo el hallazgo, de modo que si dos personas revisaban el mismo, la
+    segunda anulaba a la primera sin quererlo.
     """
 
     def __init__(self, session: AsyncSession) -> None:

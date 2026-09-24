@@ -10,10 +10,9 @@ el campo no llegaba nunca y la regla no podia dispararse.
 Y la experiencia es factor de control del analisis: cruzarla despues por un
 codigo que el participante tecleo a mano es donde se pierden filas.
 
-EL ENTERO DE ANIOS SALE Y ENTRA LA BANDA. El modelo guardaba anios y derivaba
-tres bandas propias, mientras que la ficha preguntaba en cuatro tramos
-distintos. Quien respondiera «De 1 a 3» podia caer en dos bandas del analisis y
-no habia forma de saber en cual, porque el numero exacto nunca se pregunto.
+El entero de anios sale y entra la banda: el modelo derivaba tres bandas
+propias y la ficha preguntaba en cuatro tramos, de modo que «De 1 a 3» podia
+caer en dos y no habia forma de saber en cual.
 
 La columna se anade con valor por defecto y luego se deja obligatoria, para que
 la migracion no falle sobre filas existentes. En la practica no hay ninguna.
