@@ -310,7 +310,13 @@ class SqlBatchRepository:
         carga anterior produciria mitades de tamano equivocado sin que nada lo
         delate. La ejecucion sale de los propios hallazgos, que es de donde el
         que llama la sabe.
+
+        Los renglones van primero y a mano. Borrar la lista con `delete()` no
+        arrastra a sus renglones, porque esa forma no pasa por el cascade de la
+        sesion, y al recongelar el lote quedaban veinticuatro huerfanos con un
+        `worklist_id` que ya no apuntaba a nada.
         """
+        await self._session.execute(delete(WorklistItemRow))
         await self._session.execute(delete(WorklistRow))
         if not items:
             await self._session.commit()

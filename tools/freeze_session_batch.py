@@ -37,7 +37,23 @@ REGLAS DE SELECCIÓN, todas declaradas de antemano
 
 5. Reparto A y B. Lo hace la regla del propio sistema, que ordena por huella y
    alterna. La semilla es la más baja que produce un reparto conforme a las
-   reglas 2 y 4 en ambos lotes.
+   reglas 2, 4 y 6 en ambos lotes.
+
+6. Abstenciones repartidas. Ocho de los veinticuatro son hallazgos sobre los
+   que el modelo no se pronuncia, cuatro por lote. Ocho de veinticuatro es el
+   33%, y en el fondo elegible las abstenciones son el 35%: el lote representa
+   lo que la herramienta hace de verdad, y no una versión suya que siempre
+   responde.
+
+   Van cuatro por lote porque de eso depende sobre cuántas alertas recibe
+   ayuda decisiva quien está en la condición asistida. Con seis en un lote y
+   tres en el otro, la diferencia entre condiciones dependía de qué mitad te
+   tocó asistida, y el contrabalanceo cruza mitad con condición, de modo que
+   esa variación entraba entera en la medición.
+
+   Las cuatro se reparten además por verdad conocida, dos de casos reales y
+   dos de los que no lo son, para que la abstención no se concentre en una
+   sola clase.
 
     py tools/freeze_session_batch.py --dry-run
     py tools/freeze_session_batch.py
@@ -76,19 +92,35 @@ BATCH_TOTAL = 24
 PER_CONDITION = BATCH_TOTAL // 2
 WRONG_PER_BATCH = 2
 
+# Regla 6. Ocho abstenciones, cuatro por lote y dos de cada clase de verdad.
+ABSTENTIONS_TOTAL = 8
+ABSTENTIONS_PER_HALF = ABSTENTIONS_TOTAL // 2
+ABSTENTIONS_PER_CLASS = ABSTENTIONS_TOTAL // 2
+# Lo que sobra son veredictos acertados, mitad de cada clase.
+CORRECT_PER_CLASS = (BATCH_TOTAL - WRONG_PER_BATCH * 2 - ABSTENTIONS_TOTAL) // 2
+
 FALSE_ALARM = "falsa alarma"
 DISMISSED = "vulnerabilidad desestimada"
 
+# La repeticion mas alta, que es la que el servicio devuelve al pintar la
+# alerta. Antes se congelaba sobre la repeticion 1 y se ensenaba la ultima, de
+# modo que el lote quedaba declarado sobre veredictos que el participante no
+# llegaba a ver.
 ELIGIBLE = text(
     """
     select f.id, f.rule_id, f.cwe, f.rule_severity, f.file_path,
            f.start_line, f.end_line, f.message, f.fingerprint, f.known_truth,
            f.execution_id, v.value, v.confidence
       from findings f
-      join verdicts v on v.finding_id = f.id
+      join (
+          select finding_id, value, confidence, anchor_verified,
+                 row_number() over (
+                     partition by finding_id order by repetition desc
+                 ) rn
+            from verdicts
+           where model_version = :model
+      ) v on v.finding_id = f.id and v.rn = 1
      where f.known_truth is not null
-       and v.model_version = :model
-       and v.repetition = 1
        and v.anchor_verified = 1
        and exists (select 1 from code_contexts c where c.finding_id = f.id)
      order by f.file_path, f.start_line
@@ -110,12 +142,21 @@ def build_finding(row) -> Finding:
 
 
 def wrong_kind(row) -> str | None:
-    """Tipo de error, o None si el veredicto no contradice la verdad."""
+    """Tipo de error, o None si el veredicto no contradice la verdad.
+
+    Una abstencion no contradice nada, de modo que tampoco es un error: es su
+    propia clase, y la regla 6 le da cuota aparte.
+    """
     if row.value == "explotable" and not row.known_truth:
         return FALSE_ALARM
     if row.value == "no_explotable" and row.known_truth:
         return DISMISSED
     return None
+
+
+def abstains(row) -> bool:
+    """El modelo analizo la alerta y no alcanzo a pronunciarse."""
+    return row.value == "indeterminado"
 
 
 def pick(rows, seed: int):
@@ -131,19 +172,38 @@ def pick(rows, seed: int):
              + chance.sample(dismissed, WRONG_PER_BATCH))
     taken = {r.id for r in wrong}
 
-    # La regla 4 aporta dos reales y dos no reales, de modo que faltan diez de
-    # cada clase para cumplir la regla 2.
-    quota = PER_CONDITION - WRONG_PER_BATCH
-    correct = [r for r in rows if r.id not in taken and not wrong_kind(r)]
+    # Regla 6. Las abstenciones entran con cuota propia y repartidas por
+    # verdad. Antes caian en el mismo saco que los aciertos, y el lote acababa
+    # con seis en una mitad y tres en la otra.
+    idle = [r for r in rows if r.id not in taken and abstains(r)]
+    idle_real = [r for r in idle if r.known_truth]
+    idle_not = [r for r in idle if not r.known_truth]
+    if (len(idle_real) < ABSTENTIONS_PER_CLASS
+            or len(idle_not) < ABSTENTIONS_PER_CLASS):
+        return None
+    abstentions = (
+        muestra_estratificada([build_finding(r) for r in idle_real],
+                              ABSTENTIONS_PER_CLASS, seed)
+        + muestra_estratificada([build_finding(r) for r in idle_not],
+                                ABSTENTIONS_PER_CLASS, seed))
+    taken |= {str(f.id) for f in abstentions}
+
+    # Lo que queda son veredictos acertados. Entre las tres cuotas salen doce
+    # casos reales y doce que no lo son, que es la regla 2.
+    correct = [r for r in rows
+               if r.id not in taken and not wrong_kind(r) and not abstains(r)]
     real = [r for r in correct if r.known_truth]
     not_real = [r for r in correct if not r.known_truth]
-    if len(real) < quota or len(not_real) < quota:
+    if len(real) < CORRECT_PER_CLASS or len(not_real) < CORRECT_PER_CLASS:
         return None
 
-    sample = (muestra_estratificada([build_finding(r) for r in real], quota, seed)
+    sample = (muestra_estratificada([build_finding(r) for r in real],
+                                    CORRECT_PER_CLASS, seed)
               + muestra_estratificada([build_finding(r) for r in not_real],
-                                      quota, seed))
-    batch = wrong + [by_id[str(f.id)] for f in sample]
+                                      CORRECT_PER_CLASS, seed))
+    batch = (wrong
+             + [by_id[str(f.id)] for f in abstentions]
+             + [by_id[str(f.id)] for f in sample])
     return batch if len(batch) == BATCH_TOTAL else None
 
 
@@ -159,6 +219,16 @@ def complies(batch, plan) -> tuple[bool, str]:
         kinds = sorted(k for k in (wrong_kind(r) for r in half) if k)
         if kinds != [FALSE_ALARM, DISMISSED]:
             return False, f"el lote {name} tiene los errores {kinds}"
+        # Regla 6, que es de lo que depende sobre cuantas alertas recibe ayuda
+        # decisiva quien esta en la condicion asistida.
+        idle = [r for r in half if abstains(r)]
+        if len(idle) != ABSTENTIONS_PER_HALF:
+            return False, (f"el lote {name} tiene {len(idle)} abstenciones "
+                           f"y no {ABSTENTIONS_PER_HALF}")
+        idle_real = sum(1 for r in idle if r.known_truth)
+        if idle_real != ABSTENTIONS_PER_HALF // 2:
+            return False, (f"el lote {name} tiene {idle_real} abstenciones "
+                           f"sobre casos reales y no {ABSTENTIONS_PER_HALF // 2}")
     return True, "conforme"
 
 
@@ -242,9 +312,11 @@ async def main(args) -> int:
         "semilla": chosen,
         "fondo_elegible": {
             "hallazgos": len(rows),
-            "criterio": "verdad conocida, veredicto del modelo seleccionado en "
-                        "la repetición 1, anclaje verificado y contexto "
-                        "conservado",
+            "criterio": "verdad conocida, veredicto del modelo seleccionado "
+                        "en la última repetición, que es la que el servicio "
+                        "devuelve al pintar la alerta, anclaje verificado y "
+                        "contexto conservado",
+            "abstenciones": sum(1 for r in rows if abstains(r)),
             "execution_id": sorted({r.execution_id for r in rows}),
         },
         "modelo": args.model,
@@ -253,7 +325,9 @@ async def main(args) -> int:
             "por_condicion": PER_CONDITION,
             "casos_reales": sum(1 for r in batch if r.known_truth),
             "casos_no_reales": sum(1 for r in batch if not r.known_truth),
-            "abstenciones": sum(1 for r in batch if r.value == "indeterminado"),
+            "abstenciones": sum(1 for r in batch if abstains(r)),
+            "abstenciones_por_lote": ABSTENTIONS_PER_HALF,
+            "ayuda_decisiva_por_lote": PER_CONDITION - ABSTENTIONS_PER_HALF,
             "veredictos_equivocados": sum(1 for r in batch if wrong_kind(r)),
             "veredictos_equivocados_por_lote": WRONG_PER_BATCH,
             "falsas_alarmas": sum(1 for r in batch
@@ -271,6 +345,13 @@ async def main(args) -> int:
         },
     }
 
+    for name, ids in (("A", plan.batch_a), ("B", plan.batch_b)):
+        half = [by_id[str(i)] for i in ids]
+        decisivos = [r for r in half if not abstains(r)]
+        aciertos = sum(1 for r in decisivos if not wrong_kind(r))
+        print(f"lote {name}: se pronuncia en {len(decisivos)} de "
+              f"{PER_CONDITION}, acierta {aciertos} de {len(decisivos)}")
+    print()
     print(f"huella del lote: {digest}")
     print(f"reales {manifest['lote']['casos_reales']}, "
           f"no reales {manifest['lote']['casos_no_reales']}, "

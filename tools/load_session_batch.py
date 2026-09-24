@@ -10,8 +10,13 @@ huella no coincide, el lote que se cargaria no seria el que el protocolo
 declaro y la carga se rechaza. Esa comprobacion es el motivo de que la huella
 exista.
 
+Con --despliegue escribe en la base de arriba en vez de en la local, leyendo
+DATABASE_URL_DESPLIEGUE del .env, que es como lo hace promote_execution.
+
     py tools/load_session_batch.py --dry-run
     py tools/load_session_batch.py
+    py tools/load_session_batch.py --despliegue --dry-run
+    py tools/load_session_batch.py --despliegue
 """
 
 import argparse
@@ -31,6 +36,22 @@ from src.shared.composition import Container  # noqa: E402
 from src.shared.config import get_settings  # noqa: E402
 
 
+def url_del_despliegue() -> str:
+    """La del .env, en la forma que espera el motor asincrono."""
+    env = Path(__file__).resolve().parents[1] / ".env"
+    if not env.is_file():
+        sys.exit("No hay .env del que leer DATABASE_URL_DESPLIEGUE")
+    pares = dict(
+        linea.split("=", 1)
+        for linea in env.read_text(encoding="utf-8").splitlines()
+        if "=" in linea and not linea.lstrip().startswith("#")
+    )
+    cruda = pares.get("DATABASE_URL_DESPLIEGUE", "").strip().strip('"')
+    if not cruda:
+        sys.exit("Falta DATABASE_URL_DESPLIEGUE en .env")
+    return cruda
+
+
 def huella_de(registros) -> str:
     cuerpo = "".join(sorted(f"{r['lote']}|{r['huella']}\n" for r in registros))
     return hashlib.sha256(cuerpo.encode("utf-8")).hexdigest()
@@ -38,6 +59,13 @@ def huella_de(registros) -> str:
 
 async def main(args) -> int:
     settings = get_settings()
+    if args.despliegue:
+        # Sin tocar el .env: la configuracion se copia con la base cambiada,
+        # de modo que una corrida contra el despliegue no deja la local
+        # apuntando a otro sitio.
+        settings = settings.model_copy(
+            update={"database_url": url_del_despliegue()}
+        )
     raiz = Path(settings.repository_root)
     carpeta = raiz / "experimento"
     csv_lote = carpeta / "lote_sesion.csv"
@@ -53,6 +81,7 @@ async def main(args) -> int:
         return 1
 
     calculada = huella_de(registros)
+    print(f"base:    {'DESPLIEGUE' if args.despliegue else 'local'}")
     print(f"lote:    {csv_lote}")
     print(f"filas:   {len(registros)}")
     print(f"huella:  {calculada}")
@@ -100,6 +129,8 @@ async def main(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--despliegue", action="store_true",
+                        help="escribe en la base de arriba y no en la local")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 

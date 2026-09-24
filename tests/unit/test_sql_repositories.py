@@ -462,3 +462,53 @@ class TestParticipanteDePiloto:
         assert del_segundo.order != del_primero.order
         historial = await SqlSessionRepository(session).existing_orders()
         assert len(historial) == 2
+
+
+class TestRecongelarElLote:
+    """Volver a congelar el lote no puede dejar restos del anterior.
+
+    `replace_all` borraba la lista con un delete masivo, que no pasa por el
+    cascade de la sesion y por tanto no arrastraba a sus renglones. Al
+    recongelar quedaban veinticuatro huerfanos apuntando a una lista que ya no
+    existia, y la comprobacion previa a convocar decia doce y doce porque solo
+    cuenta los de la lista viva.
+    """
+
+    async def _ejecucion_con(self, session, cuantos: int):
+        ejecucion = Execution(
+            project_id=PROJECT_ID,
+            tool_name="Semgrep OSS",
+            ruleset_version="1.177.0",
+            status=ExecutionStatus.COMPLETED,
+        )
+        await SqlExecutionRepository(session).save(ejecucion)
+        hallazgos = [
+            _finding(rule=f"r.{i}", line=10 + i, body=f"x{i}")
+            for i in range(cuantos)
+        ]
+        await SqlFindingRepository(session).save_all(hallazgos, ejecucion.id)
+        return [str(h.id) for h in hallazgos]
+
+    async def test_no_deja_renglones_huerfanos(self, session):
+        from sqlalchemy import func
+        from sqlalchemy import select as _select
+
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlBatchRepository,
+        )
+        from src.shared.database import WorklistItemRow
+
+        ids = await self._ejecucion_con(session, 4)
+        repo = SqlBatchRepository(session)
+
+        await repo.replace_all([(ids[0], "A", 0), (ids[1], "B", 0)])
+        await repo.replace_all([(ids[2], "A", 0), (ids[3], "B", 0)])
+
+        total = (
+            await session.execute(_select(func.count()).select_from(WorklistItemRow))
+        ).scalar_one()
+        assert total == 2, (
+            f"quedaron {total} renglones: los de la carga anterior siguen ahi"
+        )
+        assert await repo.batches() == {"A": 1, "B": 1}
+
