@@ -12,3 +12,7 @@ repos/
 # Respaldos que dejan las migraciones y las cargas antes de tocar la base.
 # «*.db» no los cubre porque el sufijo va detras de la extension.
 certa.db.*
+
+# Volcado de lo que se retira de un participante. Lleva su ficha,
+# de modo que no viaja al repositorio aunque el codigo sea anonimo.
+retirado-*.json

@@ -4,9 +4,17 @@ from dataclasses import dataclass
 from ..value_objects.condition import Condition
 
 # Los dos órdenes posibles en un diseño intra-sujeto de dos condiciones.
+#
+# El control va primero en la lista, y eso decide por dónde empieza quien se
+# sienta el primero: el desempate de `assign` es el índice, de modo que con el
+# historial vacío toca el orden que aquí aparece antes. Qué lado arranca no
+# afecta al equilibrio, que lo produce la alternancia, pero sí a qué queda
+# medido si una sesión se corta a la mitad. Empezando por el control, lo que
+# sobrevive a una sesión interrumpida es la línea base, que es el término de
+# comparación y el que no se puede reconstruir después.
 ORDERS: tuple[tuple[Condition, Condition], ...] = (
-    (Condition.WITH_ASSISTANT, Condition.CONTROL),
     (Condition.CONTROL, Condition.WITH_ASSISTANT),
+    (Condition.WITH_ASSISTANT, Condition.CONTROL),
 )
 
 
