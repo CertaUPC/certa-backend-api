@@ -7,11 +7,11 @@ dos últimos. La distinción no existía de verdad, y el primero no podía siqui
 crear un proyecto, de modo que quien se registraba no podía usar la
 herramienta.
 
-El propio documento de arquitectura ya describía membresía sin llamarla así:
-del líder técnico dice que «registra el proyecto, lanza el análisis y consulta
-en qué quedó el trabajo de su equipo», y del desarrollador que «recibe la lista
-ordenada y decide sobre cada uno». Eso no es un rango: es lo que uno hace en su
-proyecto y lo que hace quien fue invitado a él.
+El propio documento de arquitectura ya describía la pertenencia al proyecto
+sin llamarla así: del líder técnico dice que «registra el proyecto, lanza el
+análisis y consulta en qué quedó el trabajo de su equipo», y del desarrollador
+que «recibe la lista ordenada y decide sobre cada uno». Eso no es un rango: es
+lo que uno hace en su proyecto y lo que hace quien fue invitado a él.
 
 DOS PAPELES Y NO MÁS. Quien crea el proyecto es su administrador. A quien
 invita es miembro. Los dos revisan hallazgos y deciden, porque decidir es para

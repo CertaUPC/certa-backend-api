@@ -18,6 +18,8 @@ from ..schemas.schemas import (
     GrantResponse,
     GrantSummary,
     LoginRequest,
+    ParticipantAccessRequest,
+    ParticipantAccessResponse,
     TokenResponse,
 )
 from .dependencies import UserDep
@@ -255,3 +257,84 @@ async def change_role(
     fila.role = role
     await session.commit()
     return {"id": fila.id, "email": fila.email, "role": fila.role}
+
+
+@router.post("/participant", response_model=ParticipantAccessResponse)
+async def participant_access(
+    body: ParticipantAccessRequest, container: ContainerDep, session: SessionDep
+) -> ParticipantAccessResponse:
+    """Entrada del participante a su sesión, con su código anónimo.
+
+    QUÉ CONTROLA Y QUÉ NO, dicho sin adornos. El código no es un secreto: el
+    protocolo lo usa como identificador y quien dirige la sesión se lo dicta a
+    la persona. Lo que controla el acceso es que exista una credencial de
+    participación vigente para ese código, que el investigador emite al empezar
+    y que vence en horas. Fuera de esa ventana, el código no abre nada.
+
+    Esa es la protección que el contexto admite. La sesión ocurre en una sala
+    con quien dirige el estudio delante, y la alternativa, darle una cuenta con
+    contraseña a cada participante, contradice el consentimiento, que promete
+    que no se recoge nada que identifique a la persona.
+
+    LO QUE SÍ EVITA, y era el apaño que había: que el participante entre en el
+    navegador del investigador con la sesión de este abierta. Ahora se lleva
+    una credencial acotada a su participación, que no abre la lista de
+    participantes ni las ejecuciones de nadie.
+    """
+    from sqlalchemy import select as _select
+
+    from ....shared.database_experiment import ParticipantRow, SessionRow
+
+    negado = HTTPException(
+        status.HTTP_401_UNAUTHORIZED,
+        detail=(
+            "Ese código no tiene una sesión abierta. Avisa a quien dirige el "
+            "estudio."
+        ),
+    )
+
+    codigo = body.anonymous_code.strip().upper()
+    if not codigo:
+        raise negado
+
+    participante = (
+        await session.execute(
+            _select(ParticipantRow).where(ParticipantRow.anonymous_code == codigo)
+        )
+    ).scalar_one_or_none()
+    if participante is None:
+        raise negado
+
+    repo = SqlAccessGrantRepository(session)
+    vigentes = [
+        g for g in await repo.list_for(GrantKind.PARTICIPATION, participante.id)
+        if g.is_active
+    ]
+    if not vigentes:
+        raise negado
+
+    fila = (
+        await session.execute(
+            _select(SessionRow).where(SessionRow.participant_id == participante.id)
+        )
+    ).scalars().first()
+    if fila is None:
+        raise negado
+
+    grant = vigentes[0]
+    await repo.touch(grant.id)
+    token = issue_token(
+        subject=participante.id,
+        secret=container.settings.jwt_secret,
+        algorithm=container.settings.jwt_algorithm,
+        minutes=VIGENCIA_DEL_CANJE[GrantKind.PARTICIPATION],
+        kind=GrantKind.PARTICIPATION.value,
+        grant=grant.id,
+    )
+    return ParticipantAccessResponse(
+        access_token=token,
+        participant_id=participante.id,
+        order=list(fila.condition_order or []),
+        first_batch=fila.first_batch,
+        second_batch=fila.second_batch,
+    )

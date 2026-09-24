@@ -58,3 +58,30 @@ class GrantSummary(BaseModel):
 
 class GrantExchangeRequest(BaseModel):
     token: str
+
+
+class ParticipantAccessRequest(BaseModel):
+    """Entrada del participante a su sesión, por código anónimo.
+
+    No lleva contraseña, y es deliberado: el protocolo identifica a quien
+    participa por un código y promete que no se recoge su nombre ni su correo.
+    Pedirle credenciales obligaría a darle una cuenta, que es justo lo que el
+    consentimiento dice que no ocurre.
+    """
+
+    anonymous_code: str
+
+
+class ParticipantAccessResponse(BaseModel):
+    """Lo que el participante necesita para empezar, y nada más.
+
+    No devuelve la ficha ni el estado del estudio: solo su credencial acotada
+    y el reparto que le tocó.
+    """
+
+    access_token: str
+    token_type: str = "bearer"
+    participant_id: str
+    order: list[str]
+    first_batch: str
+    second_batch: str

@@ -278,7 +278,8 @@ class TestProjects:
         assert segundo.json()["name"] == "Juliet"
 
     async def test_developer_cannot_create(self, client):
-        """Reformulada con la membresia, conservando lo que la historia exige.
+        """Reformulada con la pertenencia al proyecto, conservando lo que la
+        historia exige.
 
         Antes comprobaba que un `desarrollador` no podia crear proyectos. Eso
         dejaba a quien se registraba sin poder usar la herramienta, que es lo
@@ -1338,3 +1339,104 @@ class TestMembresiaDelProyecto:
             for p in (await client.get("/api/v1/projects", headers=_auth(invitado))).json()
         }
         assert pid not in visibles
+
+
+class TestEntradaDelParticipante:
+    """El participante entra con su codigo, no con el navegador del otro.
+
+    El apano que esto retira: el participante entraba en el navegador que el
+    investigador dejaba con su sesion abierta, de modo que durante la sesion el
+    equipo guardaba un token con permisos de investigador.
+    """
+
+    async def _preparar(self, client, codigo="P01"):
+        token = await _token(client)
+        alta = await client.post(
+            "/api/v1/experiment/participants",
+            json={
+                "anonymous_code": codigo,
+                "experience_band": "de_1_a_3",
+                "consented": True,
+            },
+            headers=_auth(token),
+        )
+        assert alta.status_code == 201, alta.text
+        return token, alta.json()["participant_id"]
+
+    async def test_sin_credencial_vigente_no_entra(self, client):
+        """El codigo no es un secreto: lo que controla es que el investigador
+        haya emitido la credencial y que siga en su ventana."""
+        await self._preparar(client)
+        r = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+        )
+        assert r.status_code == 401
+
+    async def test_con_credencial_vigente_entra_y_recibe_su_reparto(self, client):
+        token, pid = await self._preparar(client)
+        await client.post(
+            "/api/v1/auth/grants",
+            json={"subject_kind": "participation", "subject_id": pid},
+            headers=_auth(token),
+        )
+        r = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+        )
+        assert r.status_code == 200, r.text
+        cuerpo = r.json()
+        assert cuerpo["participant_id"] == pid
+        assert len(cuerpo["order"]) == 2
+        assert {cuerpo["first_batch"], cuerpo["second_batch"]} == {"A", "B"}
+
+    async def test_lo_que_recibe_no_abre_nada_ajeno(self, client):
+        """Es la propiedad que justifica todo esto."""
+        token, pid = await self._preparar(client)
+        await client.post(
+            "/api/v1/auth/grants",
+            json={"subject_kind": "participation", "subject_id": pid},
+            headers=_auth(token),
+        )
+        suyo = (
+            await client.post(
+                "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+            )
+        ).json()["access_token"]
+
+        for ruta in ("/api/v1/experiment/participants", "/api/v1/projects"):
+            r = await client.get(ruta, headers=_auth(suyo))
+            assert r.status_code == 403, f"{ruta} respondió {r.status_code}"
+
+    async def test_un_codigo_inventado_se_rechaza_igual(self, client):
+        """Y con el mismo mensaje, para no decir que codigos existen."""
+        await self._preparar(client)
+        uno = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+        )
+        otro = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "NO-EXISTE"}
+        )
+        assert uno.status_code == otro.status_code == 401
+        assert uno.json()["detail"] == otro.json()["detail"]
+
+    async def test_una_credencial_revocada_cierra_la_puerta(self, client):
+        token, pid = await self._preparar(client)
+        emitida = (
+            await client.post(
+                "/api/v1/auth/grants",
+                json={"subject_kind": "participation", "subject_id": pid},
+                headers=_auth(token),
+            )
+        ).json()
+        assert (
+            await client.post(
+                "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+            )
+        ).status_code == 200
+
+        await client.delete(
+            f"/api/v1/auth/grants/{emitida['id']}", headers=_auth(token)
+        )
+        r = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+        )
+        assert r.status_code == 401

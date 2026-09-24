@@ -44,7 +44,13 @@ async def list_projects(session: SessionDep, user: UserDep) -> list[ProjectRespo
     """Los proyectos de quien pregunta, el más reciente primero.
 
     Los públicos entran en la lista de todos; los ajenos no aparecen.
+
+    Exige una cuenta de persona. Una credencial de participación solo veía los
+    conjuntos públicos, de modo que no había fuga, pero quien entra a resolver
+    su lote no tiene nada que hacer en un listado de proyectos: dárselo es
+    ampliar su credencial sin motivo.
     """
+    user.require()
     miembros = SqlMembershipRepository(session)
     rows = (
         await session.execute(
