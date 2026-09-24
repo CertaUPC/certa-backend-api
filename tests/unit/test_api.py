@@ -278,13 +278,29 @@ class TestProjects:
         assert segundo.json()["name"] == "Juliet"
 
     async def test_developer_cannot_create(self, client):
+        """Reformulada con la membresia, conservando lo que la historia exige.
+
+        Antes comprobaba que un `desarrollador` no podia crear proyectos. Eso
+        dejaba a quien se registraba sin poder usar la herramienta, que es lo
+        contrario de lo que el producto necesita. Lo que US006 demuestra de
+        verdad es que crear un proyecto te hace su administrador y que el
+        proyecto es tuyo, no de otro.
+        """
         token = await _token(client, role="desarrollador")
         r = await client.post(
             "/api/v1/projects",
             json={"name": "Juliet", "repository_path": "/repos/juliet"},
             headers=_auth(token),
         )
-        assert r.status_code == 403
+        assert r.status_code in (200, 201), r.text
+
+        miembros = (
+            await client.get(
+                f"/api/v1/projects/{r.json()['id']}/members", headers=_auth(token)
+            )
+        ).json()
+        assert [m["role"] for m in miembros] == ["administrador"]
+        assert miembros[0]["invited_by"] is None
 
 
 class TestIngest:
@@ -1201,3 +1217,124 @@ class TestLaFichaDecideLaParticipacion:
         analisis va a usar como factor."""
         r = await self._alta(client, alert_frequency="de vez en cuando")
         assert r.status_code == 422
+
+
+class TestMembresiaDelProyecto:
+    """El permiso viene de la relacion con el proyecto, no de un rango.
+
+    De dieciseis comprobaciones del sistema, trece admitian indistintamente a
+    investigador y lider tecnico: la distincion no existia. Y el rol mas bajo
+    no podia ni crear un proyecto, de modo que quien se registraba no podia
+    usar la herramienta.
+    """
+
+    async def _proyecto(self, client, token, ruta="/repos/mio"):
+        r = await client.post(
+            "/api/v1/projects",
+            json={"name": "Mio", "repository_path": ruta},
+            headers=_auth(token),
+        )
+        assert r.status_code in (200, 201), r.text
+        return r.json()["id"]
+
+    async def _cuenta(self, client, correo):
+        alta = await client.post(
+            "/api/v1/auth/register",
+            json={"email": correo, "password": "contrasena-segura"},
+        )
+        sesion = await client.post(
+            "/api/v1/auth/login",
+            json={"email": correo, "password": "contrasena-segura"},
+        )
+        return alta.json()["id"], sesion.json()["access_token"]
+
+    async def test_quien_crea_administra(self, client):
+        token = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, token)
+        miembros = (
+            await client.get(f"/api/v1/projects/{pid}/members", headers=_auth(token))
+        ).json()
+        assert miembros == [
+            {"user_id": miembros[0]["user_id"], "role": "administrador", "invited_by": None}
+        ]
+
+    async def test_el_invitado_entra_como_miembro(self, client):
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        ajeno_id, ajeno = await self._cuenta(client, "invitado@upc.edu.pe")
+
+        r = await client.post(
+            f"/api/v1/projects/{pid}/members",
+            params={"user_id": ajeno_id},
+            headers=_auth(dueno),
+        )
+        assert r.status_code == 201
+        assert r.json()["role"] == "miembro"
+
+        visibles = {
+            p["id"]
+            for p in (await client.get("/api/v1/projects", headers=_auth(ajeno))).json()
+        }
+        assert pid in visibles
+
+    async def test_quien_no_pertenece_no_sabe_que_existe(self, client):
+        """No se responde «no eres administrador» a quien no pertenece: eso ya
+        confirmaria que el proyecto existe."""
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        _, ajeno = await self._cuenta(client, "extrano@upc.edu.pe")
+
+        r = await client.get(f"/api/v1/projects/{pid}/members", headers=_auth(ajeno))
+        assert r.status_code == 404
+
+    async def test_el_miembro_no_invita(self, client):
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        invitado_id, invitado = await self._cuenta(client, "uno@upc.edu.pe")
+        await client.post(
+            f"/api/v1/projects/{pid}/members",
+            params={"user_id": invitado_id},
+            headers=_auth(dueno),
+        )
+        tercero_id, _ = await self._cuenta(client, "dos@upc.edu.pe")
+
+        r = await client.post(
+            f"/api/v1/projects/{pid}/members",
+            params={"user_id": tercero_id},
+            headers=_auth(invitado),
+        )
+        assert r.status_code == 403
+
+    async def test_el_administrador_no_se_retira_a_si_mismo(self, client):
+        """El proyecto quedaria sin quien lo gestione, y recuperarlo exigiria
+        tocar la base."""
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        miembros = (
+            await client.get(f"/api/v1/projects/{pid}/members", headers=_auth(dueno))
+        ).json()
+        r = await client.delete(
+            f"/api/v1/projects/{pid}/members/{miembros[0]['user_id']}",
+            headers=_auth(dueno),
+        )
+        assert r.status_code == 409
+
+    async def test_retirar_a_alguien_le_quita_la_vista(self, client):
+        dueno = await _token(client, "desarrollador")
+        pid = await self._proyecto(client, dueno)
+        invitado_id, invitado = await self._cuenta(client, "temporal@upc.edu.pe")
+        await client.post(
+            f"/api/v1/projects/{pid}/members",
+            params={"user_id": invitado_id},
+            headers=_auth(dueno),
+        )
+        r = await client.delete(
+            f"/api/v1/projects/{pid}/members/{invitado_id}", headers=_auth(dueno)
+        )
+        assert r.status_code == 204
+
+        visibles = {
+            p["id"]
+            for p in (await client.get("/api/v1/projects", headers=_auth(invitado))).json()
+        }
+        assert pid not in visibles

@@ -16,6 +16,10 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, or_, select
 
 from ....shared.database import ExecutionRow, ProjectRow
+from ...domain.entities.membership import Membership, MemberRole
+from ...infrastructure.persistence.membership_repository import (
+    SqlMembershipRepository,
+)
 from ..schemas.schemas import ProjectRequest, ProjectResponse
 from ....iam.interfaces.rest.dependencies import UserDep
 from ....shared.rest import SessionDep
@@ -41,11 +45,11 @@ async def list_projects(session: SessionDep, user: UserDep) -> list[ProjectRespo
 
     Los públicos entran en la lista de todos; los ajenos no aparecen.
     """
-    mios = ProjectRow.owner_id == str(user.user_id) if user.user_id else False
+    miembros = SqlMembershipRepository(session)
     rows = (
         await session.execute(
             select(ProjectRow)
-            .where(or_(mios, ProjectRow.is_public_dataset.is_(True)))
+            .where(miembros.visible_para(user.user_id))
             .order_by(ProjectRow.created_at.desc())
         )
     ).scalars().all()
@@ -67,8 +71,18 @@ async def list_projects(session: SessionDep, user: UserDep) -> list[ProjectRespo
 async def create_project(
     body: ProjectRequest, session: SessionDep, user: UserDep
 ) -> ProjectResponse:
-    """Crea el proyecto, o devuelve el que ya cubre esa ruta de repositorio."""
-    user.require("investigador", "lider_tecnico")
+    """Crea el proyecto, o devuelve el que ya cubre esa ruta de repositorio.
+
+    Cualquier cuenta puede crear el suyo, y al crearlo queda como su
+    administrador. Antes hacia falta un rango, de modo que quien se registraba
+    no podia ni empezar: el permiso venia de lo que eras en el sistema en vez
+    de lo que eres en tu proyecto.
+    """
+    if user.user_id is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Crear un proyecto exige una cuenta de persona",
+        )
 
     ruta = body.repository_path.strip() or body.name.strip()
     existente = (
@@ -103,4 +117,93 @@ async def create_project(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+
+    # Quien lo crea entra como administrador, sin que nadie lo invite. Es lo
+    # que hace que el alta sea util desde el primer minuto.
+    await SqlMembershipRepository(session).add(
+        Membership(
+            project_id=UUID(row.id),
+            user_id=user.user_id,
+            role=MemberRole.ADMIN,
+        )
+    )
     return _to_response(row, 0)
+
+
+@router.get("/{project_id}/members")
+async def list_members(
+    project_id: UUID, session: SessionDep, user: UserDep
+) -> list[dict]:
+    """Quién está en el proyecto. Solo lo ven sus miembros."""
+    miembros = SqlMembershipRepository(session)
+    if await miembros.role_of(project_id, user.user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese proyecto")
+    return [
+        {
+            "user_id": str(m.user_id),
+            "role": m.role.value,
+            "invited_by": str(m.invited_by) if m.invited_by else None,
+        }
+        for m in await miembros.members_of(project_id)
+    ]
+
+
+@router.post("/{project_id}/members", status_code=status.HTTP_201_CREATED)
+async def invite_member(
+    project_id: UUID, user_id: UUID, session: SessionDep, user: UserDep
+) -> dict:
+    """Invita a alguien al proyecto, como miembro.
+
+    Solo el administrador. Y no se responde «no eres administrador» a quien no
+    pertenece al proyecto: eso ya confirmaría que existe, así que se responde
+    lo mismo que si no existiera.
+    """
+    miembros = SqlMembershipRepository(session)
+    mio = await miembros.role_of(project_id, user.user_id)
+    if mio is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese proyecto")
+    if not mio.administra:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Invitar al proyecto es cosa de su administrador",
+        )
+    if await miembros.role_of(project_id, user_id) is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Esa persona ya está en el proyecto"
+        )
+    await miembros.add(
+        Membership(
+            project_id=project_id,
+            user_id=user_id,
+            role=MemberRole.MEMBER,
+            invited_by=user.user_id,
+        )
+    )
+    return {"project_id": str(project_id), "user_id": str(user_id), "role": "miembro"}
+
+
+@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_member(
+    project_id: UUID, user_id: UUID, session: SessionDep, user: UserDep
+) -> None:
+    """Retira a alguien. Solo el administrador, y nunca a sí mismo.
+
+    Un proyecto sin administrador no lo podría gestionar nadie, y recuperarlo
+    exigiría tocar la base.
+    """
+    miembros = SqlMembershipRepository(session)
+    mio = await miembros.role_of(project_id, user.user_id)
+    if mio is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese proyecto")
+    if not mio.administra:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Retirar del proyecto es cosa de su administrador",
+        )
+    if str(user_id) == str(user.user_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "El administrador no se retira a sí mismo: el proyecto quedaría sin quien lo gestione",
+        )
+    if not await miembros.remove(project_id, user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Esa persona no está en el proyecto")

@@ -335,6 +335,46 @@ class WorklistItemRow(Base):
     )
 
 
+class ProjectMemberRow(Base):
+    """Quien es quien dentro de un proyecto.
+
+    Sustituye a la autorizacion por rango global. Los tres roles de cuenta
+    decidian lo mismo en trece de dieciseis comprobaciones, y el mas bajo no
+    podia ni crear un proyecto, de modo que quien se registraba no podia usar
+    la herramienta.
+
+    `owner_id` en projects se conserva como el dato de quien lo creo, que es un
+    hecho y no un permiso. El permiso vive aqui.
+    """
+
+    __tablename__ = "project_members"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    role: Mapped[str] = mapped_column(String(20), default="miembro")
+    # Nulo en quien creo el proyecto: entro como administrador sin que nadie lo
+    # invitara.
+    invited_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now
+    )
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_member_project_user"),
+        CheckConstraint(
+            "role IN ('administrador','miembro')", name="ck_member_role"
+        ),
+        Index("ix_members_user", "user_id"),
+    )
+
+
 class DecisionRow(Base):
     """Alguien decidió algo sobre un hallazgo, en un tiempo.
 

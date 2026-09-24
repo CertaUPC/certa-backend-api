@@ -17,6 +17,9 @@ from ...domain.services.retention_policy import (
 )
 from ...domain.value_objects.scope_filter import ScopeFilter
 from ...infrastructure.external.sarif_parser import SarifError
+from ...infrastructure.persistence.membership_repository import (
+    SqlMembershipRepository,
+)
 from ...infrastructure.persistence.sql_repositories import (
     SqlDecisionRepository,
     SqlCodeContextRepository,
@@ -121,11 +124,11 @@ async def list_executions(
     autenticado veía las ejecuciones de todos, y con ellas los fragmentos de
     código que cada hallazgo arrastra.
     """
-    mios = ProjectRow.owner_id == str(user.user_id) if user.user_id else False
+    miembros = SqlMembershipRepository(session)
     stmt = (
         select(ExecutionRow)
         .join(ProjectRow, ProjectRow.id == ExecutionRow.project_id)
-        .where(or_(mios, ProjectRow.is_public_dataset.is_(True)))
+        .where(miembros.visible_para(user.user_id))
         .order_by(ExecutionRow.created_at.desc())
     )
     if project_id:
