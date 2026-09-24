@@ -11,13 +11,13 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....shared.database import (
-    AuditRow,
+    DecisionRow,
     ContextRow,
     ExecutionRow,
     FindingRow,
     VerdictRow,
 )
-from ...domain.entities.audit import Audit, AuditValue
+from ...domain.entities.decision import Decision, DecisionValue
 from ...domain.entities.code_context import CodeContext
 from ...domain.entities.execution import Execution, ExecutionStatus
 from ...domain.entities.finding import Finding
@@ -453,59 +453,136 @@ class SqlVerdictRepository:
         return [self._to_entity(r) for r in rows]
 
 
-class SqlAuditRepository:
-    """Decisiones de auditoria del producto.
+class SqlDecisionRepository:
+    """Las decisiones, las del producto y las del estudio.
 
     Guardar una nueva retira la vigencia de las anteriores en la misma
     operacion. Hacerlo en dos pasos dejaria, ante un fallo entre medias, dos
     decisiones vigentes sobre el mismo hallazgo, y entonces cual vale seria una
     cuestion de suerte.
+
+    LA VIGENCIA SE RETIRA POR AUTOR, no por hallazgo. El repositorio de
+    auditoria que este sustituye la retiraba mirando solo el hallazgo, de modo
+    que si dos personas revisaban el mismo, la segunda anulaba a la primera sin
+    quererlo. En un uso de un solo equipo no se notaba; con varios clientes es
+    perdida de datos ajenos.
     """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def save(self, audit: Audit) -> None:
-        await self._session.execute(
-            update(AuditRow)
-            .where(
-                AuditRow.finding_id == str(audit.finding_id),
-                AuditRow.is_current.is_(True),
+    @staticmethod
+    def _to_entity(r: DecisionRow) -> Decision:
+        return Decision(
+            id=UUID(r.id),
+            finding_id=UUID(r.finding_id),
+            user_id=UUID(r.user_id) if r.user_id else None,
+            participant_id=UUID(r.participant_id) if r.participant_id else None,
+            session_id=UUID(r.session_id) if r.session_id else None,
+            worklist_id=UUID(r.worklist_id) if r.worklist_id else None,
+            condition=r.condition,
+            value=DecisionValue(r.value),
+            seconds=r.seconds,
+            is_current=r.is_current,
+            comment=r.comment,
+            created_at=r.created_at,
+        )
+
+    async def save(self, decision: Decision) -> None:
+        condiciones = [
+            DecisionRow.finding_id == str(decision.finding_id),
+            DecisionRow.is_current.is_(True),
+        ]
+        if decision.user_id is not None:
+            condiciones.append(DecisionRow.user_id == str(decision.user_id))
+        else:
+            condiciones.append(
+                DecisionRow.participant_id == str(decision.participant_id)
             )
-            .values(is_current=False)
+        # La condicion forma parte de la identidad de la medida: el mismo
+        # participante resuelve lotes distintos bajo condiciones distintas, y
+        # una no rectifica a la otra.
+        if decision.condition is not None:
+            condiciones.append(DecisionRow.condition == decision.condition)
+
+        await self._session.execute(
+            update(DecisionRow).where(*condiciones).values(is_current=False)
         )
         self._session.add(
-            AuditRow(
-                id=str(audit.id),
-                finding_id=str(audit.finding_id),
-                user_id=str(audit.user_id) if audit.user_id else None,
-                value=audit.value.value,
-                seconds=audit.seconds,
-                is_current=audit.is_current,
-                comment=audit.comment,
-                created_at=audit.created_at,
+            DecisionRow(
+                id=str(decision.id),
+                finding_id=str(decision.finding_id),
+                user_id=str(decision.user_id) if decision.user_id else None,
+                participant_id=(
+                    str(decision.participant_id) if decision.participant_id else None
+                ),
+                session_id=str(decision.session_id) if decision.session_id else None,
+                worklist_id=(
+                    str(decision.worklist_id) if decision.worklist_id else None
+                ),
+                condition=decision.condition,
+                value=decision.value.value,
+                seconds=decision.seconds,
+                is_current=decision.is_current,
+                comment=decision.comment,
+                created_at=decision.created_at,
             )
         )
         await self._session.commit()
 
-    async def list_by_finding(self, finding_id: UUID) -> list[Audit]:
+    async def list_by_finding(self, finding_id: UUID) -> list[Decision]:
+        """Historial completo, incluidas las rectificadas.
+
+        Conservarlas permite distinguir un cambio de opinion de un dato
+        ausente.
+        """
         filas = (
             await self._session.execute(
-                select(AuditRow)
-                .where(AuditRow.finding_id == str(finding_id))
-                .order_by(AuditRow.created_at.desc())
+                select(DecisionRow)
+                .where(DecisionRow.finding_id == str(finding_id))
+                .order_by(DecisionRow.created_at.desc())
             )
         ).scalars()
-        return [
-            Audit(
-                id=UUID(f.id),
-                finding_id=UUID(f.finding_id),
-                user_id=UUID(f.user_id) if f.user_id else None,
-                value=AuditValue(f.value),
-                seconds=f.seconds,
-                is_current=f.is_current,
-                comment=f.comment,
-                created_at=f.created_at,
+        return [self._to_entity(f) for f in filas]
+
+    async def list_current_by_execution(self, execution_id: UUID) -> list[Decision]:
+        """Las decisiones vigentes sobre los hallazgos de una ejecucion.
+
+        Se unen por el hallazgo porque la decision no guarda la ejecucion: la
+        guarda el hallazgo, y duplicar ese dato abriria la puerta a que los dos
+        dejaran de coincidir.
+        """
+        filas = (
+            await self._session.execute(
+                select(DecisionRow)
+                .join(FindingRow, FindingRow.id == DecisionRow.finding_id)
+                .where(
+                    FindingRow.execution_id == str(execution_id),
+                    DecisionRow.is_current.is_(True),
+                )
             )
-            for f in filas
-        ]
+        ).scalars()
+        return [self._to_entity(f) for f in filas]
+
+    async def list_current_by_participant(
+        self, participant_id: UUID
+    ) -> list[Decision]:
+        filas = (
+            await self._session.execute(
+                select(DecisionRow).where(
+                    DecisionRow.participant_id == str(participant_id),
+                    DecisionRow.is_current.is_(True),
+                )
+            )
+        ).scalars()
+        return [self._to_entity(f) for f in filas]
+
+    async def list_all_current(self) -> list[Decision]:
+        filas = (
+            await self._session.execute(
+                select(DecisionRow)
+                .where(DecisionRow.is_current.is_(True))
+                .order_by(DecisionRow.created_at)
+            )
+        ).scalars()
+        return [self._to_entity(f) for f in filas]

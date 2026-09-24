@@ -60,7 +60,28 @@ class DecisionRequest(BaseModel):
 
 class ParticipantRequest(BaseModel):
     anonymous_code: str = Field(min_length=1, max_length=20)
-    years_of_experience: int = Field(ge=0, le=60)
+    # La ficha del anexo B, que antes vivia en un formulario aparte. Entra
+    # aqui porque la pregunta del rol de seguridad decide si la sesion se
+    # habilita, y porque la experiencia es factor de control del analisis:
+    # cruzarla despues por un codigo tecleado a mano es donde se pierden filas.
+    experience_band: str = Field(
+        description="menos_de_1, de_1_a_3, de_4_a_7 o mas_de_7"
+    )
+    has_security_role: bool = Field(
+        default=False,
+        description=(
+            "Rol formal de seguridad de aplicaciones. Una respuesta afirmativa "
+            "activa el criterio de exclusion y la sesion no se habilita."
+        ),
+    )
+    main_language: str | None = None
+    alert_frequency: str | None = Field(
+        default=None,
+        description="nunca, alguna_vez, mensual, semanal o diaria",
+    )
+    security_training: str | None = Field(
+        default=None, description="ninguna, autodidacta o curso"
+    )
     consented: bool = Field(
         description="Debe ser verdadero. Sin consentimiento no se registra nada."
     )

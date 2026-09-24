@@ -406,7 +406,7 @@ class TestParticipanteDePiloto:
         sesiones = SqlSessionRepository(session)
         p = Participant(
             anonymous_code=codigo,
-            years_of_experience=3,
+            experience_band="de_1_a_3",
             consented_at=datetime.now(timezone.utc),
             is_pilot=piloto,
         )

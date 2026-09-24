@@ -51,12 +51,24 @@ class ProjectRow(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     language: Mapped[str] = mapped_column(String(50), default="java")
-    repository_path: Mapped[str] = mapped_column(Text, unique=True)
+    # La ruta deja de ser única a secas. Lo era globalmente, de modo que dos
+    # clientes que analizaran «/repos/mi-app» compartían proyecto y, con él,
+    # los hallazgos del otro. Ahora es única por dueño.
+    repository_path: Mapped[str] = mapped_column(Text)
+    # Nulo en los proyectos anteriores al dueño, y en los conjuntos públicos
+    # como OWASP Benchmark, que no son de nadie y los ve todo el mundo.
+    owner_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
     is_public_dataset: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     executions: Mapped[list["ExecutionRow"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "repository_path", name="uq_project_owner_path"),
     )
 
 
@@ -257,30 +269,140 @@ def normalize_database_url(url: str) -> tuple[str, dict]:
     return u.render_as_string(hide_password=False), conectar
 
 
-class AuditRow(Base):
-    """Decision de auditoria del producto.
+class WorklistRow(Base):
+    """Una selección de hallazgos dentro de una ejecución.
 
-    Va aparte de `decisions`, que es del contexto de experimentacion: aquella
-    guarda la variable principal del estudio, con su participante y su
-    condicion asignada. Esta guarda quien reviso que y que resolvio, que es lo
-    que el producto necesita cuando el estudio ya no exista.
+    Generaliza lo que el estudio llamaba «lote de la sesión». El producto
+    quiere lo mismo sin congelarlo: «revisa estos doce», «los críticos de
+    ayer». Que la sesión del experimento sea una lista de trabajo congelada, y
+    no otro mecanismo, es lo que la convierte en una función del producto en
+    vez de un apaño del estudio.
 
-    La clave foranea al usuario es SET NULL y no CASCADE por la misma razon que
-    en executions: la revision es un hecho que ocurrio, y borrar al usuario
-    debe anonimizar el registro, no destruirlo.
+    `frozen_at` y `fingerprint` son lo propio del uso experimental: el
+    protocolo exige que el lote quede fijado antes de reclutar, y la huella
+    permite comprobar después que nadie lo cambió. En el producto van nulos,
+    porque una lista que se puede reordenar no necesita acreditarse.
     """
 
-    __tablename__ = "audits"
+    __tablename__ = "worklists"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    execution_id: Mapped[str] = mapped_column(
+        ForeignKey("executions.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    frozen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now
+    )
+
+    items: Mapped[list["WorklistItemRow"]] = relationship(
+        back_populates="worklist", cascade="all, delete-orphan"
+    )
+
+
+class WorklistItemRow(Base):
+    """Un hallazgo dentro de una lista, en su posición.
+
+    `finding_id` es clave foránea de verdad, a diferencia de la tabla que
+    sustituye. Allí era una cadena suelta, de modo que cargar un lote en una
+    base que no tuviera esos hallazgos funcionaba sin protestar y la sesión
+    reventaba en la primera alerta. Aquí el motor lo impide.
+    """
+
+    __tablename__ = "worklist_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    worklist_id: Mapped[str] = mapped_column(
+        ForeignKey("worklists.id", ondelete="CASCADE")
+    )
+    finding_id: Mapped[str] = mapped_column(
+        ForeignKey("findings.id", ondelete="CASCADE")
+    )
+    # Mitad del lote en el estudio, «A» o «B». Nulo en el producto, que no
+    # reparte nada.
+    bucket: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    position: Mapped[int] = mapped_column(Integer)
+
+    worklist: Mapped["WorklistRow"] = relationship(back_populates="items")
+
+    __table_args__ = (
+        UniqueConstraint("worklist_id", "finding_id", name="uq_worklist_finding"),
+        Index("ix_worklist_items_bucket", "worklist_id", "bucket", "position"),
+    )
+
+
+class DecisionRow(Base):
+    """Alguien decidió algo sobre un hallazgo, en un tiempo.
+
+    ANTES ERAN DOS TABLAS, y la separación estaba razonada. `audits` guardaba
+    la decisión del producto y `decisions` la medición del experimento, con el
+    argumento de que juntarlas obligaba a inventar un participante y una
+    condición cada vez que alguien usara la herramienta fuera del estudio, y
+    que eso impedía retirar la instrumentación al terminar la tesis.
+
+    QUÉ REVIERTE ESA DECISIÓN. Que el acto es el mismo, y mantenerlo en dos
+    sitios hacía que el experimento corriera por un camino paralelo al del
+    producto en lugar de ser un caso suyo, con la lógica de rectificación
+    escrita dos veces en sitios que podían divergir. La objeción de la
+    invención se atiende sin fundir nada a la fuerza: `participant_id`,
+    `condition` y `worklist_id` admiten nulos, de modo que una fila del
+    producto no carga ni una columna del experimento. Retirar la
+    instrumentación pasa de borrar una tabla a quitar tres columnas nulables.
+
+    SE LLAMA `decisions` Y NO `audits` porque es la palabra que el acta, el
+    protocolo y el artículo emplean para la variable principal, «exactitud de
+    la decisión», y porque «auditoría» ya nombra otra cosa en este trabajo: el
+    registro auditable con los once datos que reconstruyen cómo se produjo un
+    veredicto.
+
+    LA CLAVE AL PARTICIPANTE SE CONSERVA, aunque cruce la frontera del
+    contexto de experimentación y la regla general de este esquema sea
+    referenciar por identidad al cruzarla. La razón no es de diseño sino del
+    consentimiento informado: admite retirarse en cualquier momento, y si al
+    borrar al participante sus decisiones quedaran, el borrado no habría sido
+    tal. El borrado en cascada lo garantiza el motor; dejarlo a cargo de la
+    aplicación es justo lo que el objetivo primero reprochó a MongoDB.
+
+    El precio es que quien cree el esquema tiene que registrar también las
+    tablas del estudio. Es el mismo precio que ya se paga con las cuentas, que
+    `executions` referencia, y se paga igual: importándolas en cada punto de
+    entrada.
+    """
+
+    __tablename__ = "decisions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     finding_id: Mapped[str] = mapped_column(
         ForeignKey("findings.id", ondelete="CASCADE")
     )
+    # Quién decidió. Exactamente uno de los dos, nunca ambos ni ninguno: una
+    # cuenta cuando es uso del producto, un participante cuando es el estudio.
+    # La cuenta se anonimiza al borrarse y el participante arrastra lo suyo,
+    # porque sus datos existen solo mientras el estudio los necesita.
     user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    participant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("participants.id", ondelete="CASCADE"), nullable=True
+    )
+    # Propias del estudio. Nulas en el producto, que no reparte lotes ni asigna
+    # condiciones: inventárselas sería imponerle vocabulario que no es suyo.
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    worklist_id: Mapped[str | None] = mapped_column(
+        ForeignKey("worklists.id", ondelete="SET NULL"), nullable=True
+    )
+    condition: Mapped[str | None] = mapped_column(String(20), nullable=True)
     value: Mapped[str] = mapped_column(String(20))
     seconds: Mapped[float] = mapped_column(Float)
+    # Una rectificación no sobrescribe: se guarda otra y la anterior deja de
+    # ser la vigente. Sin ese historial no se distingue una primera impresión
+    # de una conclusión, y esa distinción es la que hace auditable el registro.
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -288,13 +410,25 @@ class AuditRow(Base):
     )
 
     __table_args__ = (
-        Index("ix_audits_finding", "finding_id", "is_current"),
-        CheckConstraint("seconds > 0", name="ck_audits_seconds"),
+        Index("ix_decisions_finding", "finding_id", "is_current"),
+        Index("ix_decisions_participant", "participant_id", "is_current"),
+        CheckConstraint("seconds > 0", name="ck_decisions_seconds"),
         CheckConstraint(
-            "value IN ('confirmado','descartado','dudoso')", name="ck_audits_value"
+            "value IN ('confirmado','descartado','dudoso')",
+            name="ck_decisions_value",
+        ),
+        CheckConstraint(
+            "condition IS NULL OR condition IN ('con_asistente','sin_asistente')",
+            name="ck_decisions_condition",
+        ),
+        # El motor garantiza que toda decisión tenga un autor y uno solo. Si
+        # admitiera las dos columnas a la vez, una fila diría que decidió una
+        # cuenta y un participante, y el análisis no sabría a cuál atribuirla.
+        CheckConstraint(
+            "(user_id IS NOT NULL) <> (participant_id IS NOT NULL)",
+            name="ck_decisions_un_solo_autor",
         ),
     )
-
 
 def create_engine(url: str, echo: bool = False) -> AsyncEngine:
     cadena, conectar = normalize_database_url(url)

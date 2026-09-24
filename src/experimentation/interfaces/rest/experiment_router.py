@@ -15,7 +15,10 @@ from ....finding_validation.interfaces.schemas.schemas import (
     SessionThemeRequest,
 )
 from ....shared.database import FindingRow, VerdictRow
-from ...domain.entities.decision import Decision
+from ....finding_validation.domain.entities.decision import Decision
+from ....finding_validation.infrastructure.persistence.sql_repositories import (
+    SqlDecisionRepository,
+)
 from ...domain.entities.participant import Participant
 from ...domain.services.counterbalancer import Counterbalancer
 from ...domain.services.metrics_calculator import MetricsCalculator
@@ -27,7 +30,6 @@ from ...domain.services.misleading_follow import (
 from ...domain.value_objects.condition import Condition, DecisionValue
 from ...infrastructure.persistence.sql_repositories import (
     SqlBatchRepository,
-    SqlDecisionRepository,
     SqlParticipantRepository,
     SqlSessionRepository,
 )
@@ -63,7 +65,11 @@ async def register_participant(
     try:
         participant = Participant(
             anonymous_code=body.anonymous_code,
-            years_of_experience=body.years_of_experience,
+            experience_band=body.experience_band,
+            has_security_role=body.has_security_role,
+            main_language=body.main_language,
+            alert_frequency=body.alert_frequency,
+            security_training=body.security_training,
             consented_at=datetime.now(timezone.utc),
             is_pilot=body.is_pilot,
         )
@@ -181,20 +187,30 @@ async def record_session_theme(
 async def record_decision(
     body: DecisionRequest, session: SessionDep, user: UserDep
 ) -> dict:
-    """Registra la decisión y el tiempo. Son las variables dependientes."""
+    """Registra la decisión y el tiempo. Son las variables dependientes.
+
+    Escribe en la misma tabla que las decisiones del producto, porque el acto
+    es el mismo. Lo que la distingue es lo que trae: participante, sesión y
+    condición asignada, que una decisión de uso ordinario deja vacíos.
+
+    La condición se valida contra el objeto de valor del estudio y se guarda
+    como texto: la tabla vive en el contexto de validación, que no conoce ese
+    vocabulario ni tiene por qué.
+    """
     try:
         decision = Decision(
             finding_id=body.finding_id,
             participant_id=body.participant_id,
+            session_id=body.session_id,
             value=DecisionValue(body.value),
             seconds=body.seconds,
-            condition=Condition(body.condition),
+            condition=Condition(body.condition).value,
             comment=body.comment,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
-    await SqlDecisionRepository(session).record(decision, body.session_id)
+    await SqlDecisionRepository(session).save(decision)
     return {"decision_id": str(decision.id), "recorded": True}
 
 
@@ -207,13 +223,13 @@ async def decision_history(
     Conservarlas permite distinguir un cambio de opinión de un dato ausente.
     """
     user.require("investigador", "lider_tecnico")
-    historial = await SqlDecisionRepository(session).history_for(finding_id)
+    historial = await SqlDecisionRepository(session).list_by_finding(finding_id)
     return [
         {
             "participant_id": str(d.participant_id),
             "value": d.value.value,
             "seconds": d.seconds,
-            "condition": d.condition.value,
+            "condition": d.condition,
             "is_current": d.is_current,
         }
         for d in historial

@@ -59,7 +59,7 @@ def raises(name: str, exc: type[Exception], fn) -> None:
 NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
 print("\nPARTICIPANTES")
-p = Participant(anonymous_code="P01", years_of_experience=3, consented_at=NOW)
+p = Participant(anonymous_code="P01", experience_band="de_1_a_3", consented_at=NOW)
 check("acepta un participante válido", p.anonymous_code == "P01")
 check("estratifica por experiencia", p.experience_band == "intermedio")
 check("un año es inicial", Participant("P02", 1, NOW).experience_band == "inicial")

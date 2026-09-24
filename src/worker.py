@@ -26,6 +26,7 @@ from uuid import UUID
 
 # Registra la tabla de cuentas, que executions referencia. Ver cli.py.
 from .iam.infrastructure.persistence import models as _cuentas  # noqa: F401
+from .shared import database_experiment as _estudio  # noqa: F401
 from .shared.composition import Container
 from .shared.config import get_settings
 from .shared.tracing import correlate, install_memory_sink

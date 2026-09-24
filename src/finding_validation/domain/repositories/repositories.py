@@ -4,7 +4,7 @@ PostgreSQL, memoria o un archivo."""
 from typing import Protocol
 from uuid import UUID
 
-from ..entities.audit import Audit
+from ..entities.decision import Decision
 from ..entities.code_context import CodeContext
 from ..entities.execution import Execution
 from ..entities.finding import Finding
@@ -56,14 +56,14 @@ class CodeContextRepository(Protocol):
         ...
 
 
-class AuditRepository(Protocol):
-    """Las decisiones de auditoria del producto, sin instrumentacion de estudio."""
+class DecisionRepository(Protocol):
+    """Las decisiones sobre hallazgos, las del producto y las del estudio."""
 
-    async def save(self, audit: Audit) -> None:
+    async def save(self, decision: Decision) -> None:
         """Guarda la nueva y retira la vigencia de la anterior, si la habia."""
         ...
 
-    async def list_by_finding(self, finding_id: UUID) -> list[Audit]:
+    async def list_by_finding(self, finding_id: UUID) -> list[Decision]:
         """El historial completo, de la mas reciente a la mas antigua."""
         ...
 

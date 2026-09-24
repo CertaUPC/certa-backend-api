@@ -6,10 +6,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from ....shared.database import ExecutionRow, FindingRow, ProjectRow, VerdictRow
-from ...domain.entities.audit import Audit, AuditValue
+from ...domain.entities.decision import Decision, DecisionValue
 from ...domain.entities.execution import Execution, ExecutionStatus
 from ...domain.services.retention_policy import (
     ExecutionRetentionState,
@@ -18,7 +18,7 @@ from ...domain.services.retention_policy import (
 from ...domain.value_objects.scope_filter import ScopeFilter
 from ...infrastructure.external.sarif_parser import SarifError
 from ...infrastructure.persistence.sql_repositories import (
-    SqlAuditRepository,
+    SqlDecisionRepository,
     SqlCodeContextRepository,
     SqlExecutionRepository,
     SqlFindingRepository,
@@ -115,8 +115,19 @@ async def _project_names(session, ids: set[UUID]) -> dict[UUID, str]:
 async def list_executions(
     session: SessionDep, user: UserDep, project_id: UUID | None = None
 ) -> list[ExecutionResponse]:
-    """Ejecuciones más recientes primero."""
-    stmt = select(ExecutionRow).order_by(ExecutionRow.created_at.desc())
+    """Las ejecuciones de quien pregunta, la más reciente primero.
+
+    Se filtran por el dueño del proyecto. Sin este filtro, cualquiera
+    autenticado veía las ejecuciones de todos, y con ellas los fragmentos de
+    código que cada hallazgo arrastra.
+    """
+    mios = ProjectRow.owner_id == str(user.user_id) if user.user_id else False
+    stmt = (
+        select(ExecutionRow)
+        .join(ProjectRow, ProjectRow.id == ExecutionRow.project_id)
+        .where(or_(mios, ProjectRow.is_public_dataset.is_(True)))
+        .order_by(ExecutionRow.created_at.desc())
+    )
     if project_id:
         stmt = stmt.where(ExecutionRow.project_id == str(project_id))
     rows = (await session.execute(stmt)).scalars().all()
@@ -408,12 +419,12 @@ async def record_audit(
     session: SessionDep,
     user: UserDep,
 ) -> AuditResponse:
-    """Registra la decisión de quien audita, fuera de cualquier estudio.
+    """Registra la decisión de quien revisa, fuera de cualquier estudio.
 
-    Existe aparte del recorrido de decisiones del experimento porque aquel
-    exige participante y condición asignada. Un usuario del producto no tiene
-    ninguna de las dos, y pedírselas obligaba a registrarlo como sujeto de un
-    estudio para poder usar la herramienta.
+    Comparte tabla con las decisiones del estudio, porque el acto es el mismo,
+    pero no carga ninguna de sus columnas: sin participante, sin condición y
+    sin lote. Pedírselas obligaba a registrar a quien usa la herramienta como
+    sujeto de un estudio.
 
     Rectificar no sobrescribe: se guarda otra y la anterior deja de ser la
     vigente, de modo que el historial permita distinguir una primera impresión
@@ -424,9 +435,9 @@ async def record_audit(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe ese hallazgo")
 
     try:
-        audit = Audit(
+        audit = Decision(
             finding_id=finding_id,
-            value=AuditValue(body.value),
+            value=DecisionValue(body.value),
             seconds=body.seconds,
             user_id=user.user_id,
             comment=body.comment,
@@ -434,7 +445,7 @@ async def record_audit(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
-    await SqlAuditRepository(session).save(audit)
+    await SqlDecisionRepository(session).save(audit)
     return AuditResponse(
         id=audit.id,
         finding_id=audit.finding_id,
@@ -451,7 +462,7 @@ async def audit_history(
     finding_id: UUID, session: SessionDep, user: UserDep
 ) -> list[AuditResponse]:
     """El historial, rectificaciones incluidas, de la más reciente a la primera."""
-    registros = await SqlAuditRepository(session).list_by_finding(finding_id)
+    registros = await SqlDecisionRepository(session).list_by_finding(finding_id)
     return [
         AuditResponse(
             id=a.id,

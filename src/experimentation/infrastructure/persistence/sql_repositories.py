@@ -6,18 +6,15 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....shared.database import FindingRow
 from ....shared.database_experiment import (
     BatchItemRow,
-    DecisionRow,
     ParticipantRow,
     SessionRow,
     TransformationRow,
 )
-from ...domain.entities.decision import Decision
 from ...domain.entities.participant import Participant
 from ...domain.services.counterbalancer import Assignment
-from ...domain.value_objects.condition import Condition, DecisionValue
+from ...domain.value_objects.condition import Condition
 
 
 class SqlParticipantRepository:
@@ -29,7 +26,10 @@ class SqlParticipantRepository:
         return Participant(
             id=UUID(r.id),
             anonymous_code=r.anonymous_code,
-            years_of_experience=r.years_of_experience,
+            experience_band=r.experience_band,
+            main_language=r.main_language,
+            alert_frequency=r.alert_frequency,
+            security_training=r.security_training,
             consented_at=r.consented_at,
             has_security_role=r.has_security_role,
             is_pilot=r.is_pilot,
@@ -40,7 +40,10 @@ class SqlParticipantRepository:
             ParticipantRow(
                 id=str(participant.id),
                 anonymous_code=participant.anonymous_code,
-                years_of_experience=participant.years_of_experience,
+                experience_band=participant.experience_band,
+                main_language=participant.main_language,
+                alert_frequency=participant.alert_frequency,
+                security_training=participant.security_training,
                 has_security_role=participant.has_security_role,
                 is_pilot=participant.is_pilot,
                 consented_at=participant.consented_at,
@@ -162,106 +165,6 @@ class SqlSessionRepository:
         await self._session.commit()
 
 
-class SqlDecisionRepository:
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    @staticmethod
-    def _to_entity(r: DecisionRow) -> Decision:
-        return Decision(
-            id=UUID(r.id),
-            finding_id=UUID(r.finding_id),
-            participant_id=UUID(r.participant_id),
-            value=DecisionValue(r.value),
-            seconds=r.seconds,
-            condition=Condition(r.condition),
-            is_current=r.is_current,
-            comment=r.comment,
-        )
-
-    async def record(self, decision: Decision, session_id: UUID | None = None) -> None:
-        """Guarda la decisión y jubila la anterior sobre el mismo hallazgo.
-
-        No se borra la anterior: se marca como no vigente. Conservarla permite
-        distinguir un cambio de opinión de un dato ausente, y un cambio de
-        opinión es información sobre la tarea.
-        """
-        await self._session.execute(
-            update(DecisionRow)
-            .where(
-                DecisionRow.finding_id == str(decision.finding_id),
-                DecisionRow.participant_id == str(decision.participant_id),
-                DecisionRow.condition == decision.condition.value,
-                DecisionRow.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
-        self._session.add(
-            DecisionRow(
-                id=str(decision.id),
-                session_id=str(session_id) if session_id else None,
-                finding_id=str(decision.finding_id),
-                participant_id=str(decision.participant_id),
-                value=decision.value.value,
-                seconds=decision.seconds,
-                condition=decision.condition.value,
-                is_current=decision.is_current,
-                comment=decision.comment,
-            )
-        )
-        await self._session.commit()
-
-    async def list_current_by_execution(self, execution_id: UUID) -> list[Decision]:
-        """Las decisiones vigentes sobre los hallazgos de una ejecución.
-
-        Se unen por el hallazgo porque la decisión no guarda la ejecución: la
-        guarda el hallazgo, y duplicar ese dato abriría la puerta a que los dos
-        dejaran de coincidir.
-        """
-        rows = (
-            await self._session.execute(
-                select(DecisionRow)
-                .join(FindingRow, FindingRow.id == DecisionRow.finding_id)
-                .where(
-                    FindingRow.execution_id == str(execution_id),
-                    DecisionRow.is_current.is_(True),
-                )
-            )
-        ).scalars()
-        return [self._to_entity(r) for r in rows]
-
-    async def list_current_by_participant(
-        self, participant_id: UUID
-    ) -> list[Decision]:
-        rows = (
-            await self._session.execute(
-                select(DecisionRow).where(
-                    DecisionRow.participant_id == str(participant_id),
-                    DecisionRow.is_current.is_(True),
-                )
-            )
-        ).scalars()
-        return [self._to_entity(r) for r in rows]
-
-    async def list_all_current(self) -> list[Decision]:
-        rows = (
-            await self._session.execute(
-                select(DecisionRow)
-                .where(DecisionRow.is_current.is_(True))
-                .order_by(DecisionRow.created_at)
-            )
-        ).scalars()
-        return [self._to_entity(r) for r in rows]
-
-    async def history_for(self, finding_id: UUID) -> list[Decision]:
-        rows = (
-            await self._session.execute(
-                select(DecisionRow)
-                .where(DecisionRow.finding_id == str(finding_id))
-                .order_by(DecisionRow.created_at)
-            )
-        ).scalars()
-        return [self._to_entity(r) for r in rows]
 
 
 class SqlTransformationRepository:
