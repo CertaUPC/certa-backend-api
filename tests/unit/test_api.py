@@ -1568,3 +1568,57 @@ class TestLaSesionDelParticipante:
         for ruta in ("/api/v1/experiment/participants", "/api/v1/projects"):
             r = await client.get(ruta, headers=cabeceras)
             assert r.status_code == 403, f"{ruta} respondio {r.status_code}"
+
+
+class TestElListadoDeParticipantes:
+    """Cada uno con el reparto que le toco a el.
+
+    El listado emparejaba participantes con sesiones por posicion, contra una
+    lista que ademas excluye a los pilotos. Con un piloto de por medio cada
+    persona aparecia con el reparto de otra, y es la pantalla desde la que se
+    comprueba el contrabalanceo antes de convocar al siguiente.
+    """
+
+    async def _alta(self, client, token, codigo, piloto):
+        r = await client.post(
+            "/api/v1/experiment/participants",
+            json={
+                "anonymous_code": codigo,
+                "experience_band": "de_1_a_3",
+                "consented": True,
+                "is_pilot": piloto,
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    async def test_cada_uno_lleva_su_propio_reparto(self, client):
+        token = await _token(client)
+        altas = {
+            "PIL1": await self._alta(client, token, "PIL1", True),
+            "REA1": await self._alta(client, token, "REA1", False),
+            "REA2": await self._alta(client, token, "REA2", False),
+        }
+
+        listado = (
+            await client.get("/api/v1/experiment/participants", headers=_auth(token))
+        ).json()
+        por_codigo = {p["anonymous_code"]: p for p in listado}
+        assert set(por_codigo) == set(altas)
+
+        for codigo, alta in altas.items():
+            fila = por_codigo[codigo]
+            assert fila["order"] == alta["order"], codigo
+            assert fila["first_batch"] == alta["first_batch"], codigo
+            assert fila["second_batch"] == alta["second_batch"], codigo
+            assert fila["is_pilot"] == alta["is_pilot"], codigo
+
+    async def test_el_piloto_se_distingue_en_el_listado(self, client):
+        """Sin esa marca, el reparto que se dibuja cuenta a quien esta excluido."""
+        token = await _token(client)
+        await self._alta(client, token, "PIL2", True)
+        listado = (
+            await client.get("/api/v1/experiment/participants", headers=_auth(token))
+        ).json()
+        assert [p["is_pilot"] for p in listado] == [True]

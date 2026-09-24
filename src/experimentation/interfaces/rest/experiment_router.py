@@ -95,28 +95,29 @@ async def register_participant(
 
 @router.get("/participants")
 async def list_participants(session: SessionDep, user: UserDep) -> list[dict]:
-    """Registrados, con el orden que les tocó.
+    """Registrados, cada uno con el reparto que le tocó a él.
 
     Es lo que permite comprobar de un vistazo que el contrabalanceo sigue
-    equilibrado antes de convocar al siguiente.
+    equilibrado antes de convocar al siguiente, de modo que emparejar mal a
+    una persona con la sesión de otra no es un detalle de presentación.
     """
     user.require("investigador", "lider_tecnico")
 
     participants = SqlParticipantRepository(session)
-    sessions = SqlSessionRepository(session)
-    ordenes = await sessions.existing_orders()
+    repartos = await SqlSessionRepository(session).assignments()
 
     salida: list[dict] = []
-    for i, p in enumerate(await participants.list_all()):
-        orden = ordenes[i] if i < len(ordenes) else None
+    for p in await participants.list_all():
+        suyo = repartos.get(p.id, {})
         salida.append(
             {
                 "participant_id": str(p.id),
                 "anonymous_code": p.anonymous_code,
                 "experience_band": p.experience_band,
-                "order": [c.value for c in orden] if orden else [],
-                "first_batch": "A",
-                "second_batch": "B",
+                "is_pilot": p.is_pilot,
+                "order": suyo.get("order", []),
+                "first_batch": suyo.get("first_batch"),
+                "second_batch": suyo.get("second_batch"),
             }
         )
     return salida

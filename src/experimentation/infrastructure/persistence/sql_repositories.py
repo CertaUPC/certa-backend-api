@@ -125,6 +125,33 @@ class SqlSessionRepository:
         ).scalars().first()
         return fila.theme if fila else None
 
+    async def assignments(self) -> dict[UUID, dict]:
+        """El reparto de cada participante, por participante.
+
+        El listado los emparejaba por posicion contra la lista de ordenes, que
+        ademas excluye a los pilotos: con un piloto de por medio, cada persona
+        aparecia con el reparto de otra, y esa es la pantalla desde la que se
+        comprueba el contrabalanceo antes de convocar al siguiente.
+        """
+        filas = (
+            await self._session.execute(
+                select(
+                    SessionRow.participant_id,
+                    SessionRow.condition_order,
+                    SessionRow.first_batch,
+                    SessionRow.second_batch,
+                ).order_by(SessionRow.started_at)
+            )
+        ).all()
+        return {
+            UUID(f.participant_id): {
+                "order": list(f.condition_order or []),
+                "first_batch": f.first_batch,
+                "second_batch": f.second_batch,
+            }
+            for f in filas
+        }
+
     async def existing_orders(self) -> list[tuple[Condition, Condition]]:
         """Órdenes ya asignadas. Es lo que el contrabalanceo consulta.
 
