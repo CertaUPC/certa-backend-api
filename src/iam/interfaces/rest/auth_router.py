@@ -271,6 +271,7 @@ async def participant_access(
     """
     from sqlalchemy import select as _select
 
+    from ....experimentation.domain.entities.participant import normalizar_codigo
     from ....experimentation.infrastructure.persistence.sql_repositories import (
         SqlBatchRepository,
     )
@@ -284,7 +285,7 @@ async def participant_access(
         ),
     )
 
-    codigo = body.anonymous_code.strip().upper()
+    codigo = normalizar_codigo(body.anonymous_code)
     if not codigo:
         raise negado
 

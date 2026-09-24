@@ -12,7 +12,7 @@ from ....shared.database_experiment import (
     SessionRow,
     TransformationRow,
 )
-from ...domain.entities.participant import Participant
+from ...domain.entities.participant import Participant, normalizar_codigo
 from ...domain.services.counterbalancer import Assignment
 from ...domain.value_objects.condition import Condition
 
@@ -56,9 +56,13 @@ class SqlParticipantRepository:
         return self._to_entity(row) if row else None
 
     async def get_by_code(self, code: str) -> Participant | None:
+        # Se busca por la forma canonica: quien dicta puede haber leido «P-04»
+        # del acta y quien teclea haber escrito «P04», y es el mismo.
         row = (
             await self._session.execute(
-                select(ParticipantRow).where(ParticipantRow.anonymous_code == code)
+                select(ParticipantRow).where(
+                    ParticipantRow.anonymous_code == normalizar_codigo(code)
+                )
             )
         ).scalar_one_or_none()
         return self._to_entity(row) if row else None

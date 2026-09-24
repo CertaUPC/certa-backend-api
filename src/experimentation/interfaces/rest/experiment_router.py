@@ -19,7 +19,7 @@ from ....finding_validation.domain.entities.decision import Decision
 from ....finding_validation.infrastructure.persistence.sql_repositories import (
     SqlDecisionRepository,
 )
-from ...domain.entities.participant import Participant
+from ...domain.entities.participant import Participant, normalizar_codigo
 from ...domain.services.counterbalancer import Counterbalancer
 from ...domain.services.metrics_calculator import MetricsCalculator
 from ...domain.services.misleading_follow import (
@@ -56,15 +56,16 @@ async def register_participant(
         )
 
     participants = SqlParticipantRepository(session)
-    if await participants.get_by_code(body.anonymous_code):
+    codigo = normalizar_codigo(body.anonymous_code)
+    if await participants.get_by_code(codigo):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Ya existe un participante con el código {body.anonymous_code}",
+            f"Ya existe un participante con el código {codigo}",
         )
 
     try:
         participant = Participant(
-            anonymous_code=body.anonymous_code,
+            anonymous_code=codigo,
             experience_band=body.experience_band,
             has_security_role=body.has_security_role,
             main_language=body.main_language,
@@ -85,6 +86,9 @@ async def register_participant(
     return {
         "participant_id": str(participant.id),
         "session_id": str(session_id),
+        # El codigo canonico, que es el que hay que dictar: quien lo escribio
+        # pudo teclearlo sin guion y la pantalla tiene que leer lo guardado.
+        "anonymous_code": participant.anonymous_code,
         "experience_band": participant.experience_band,
         "is_pilot": participant.is_pilot,
         "order": [c.value for c in assignment.order],

@@ -5,9 +5,31 @@ credenciales, porque el consentimiento promete que no se recoge su nombre ni
 su correo. La ficha describe al grupo, no a nadie.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID, uuid4
+
+# El acta de consentimiento que la persona firma lleva el codigo con guion,
+# «P-04», y el campo de la pantalla lo pedia sin el. Quien dicta lee lo que
+# tiene delante, de modo que las dos formas tenian que resolver a la misma o
+# el acceso fallaba por un caracter.
+_CODIGO = re.compile(r"^([A-Z]+)[\s\-_]*([0-9]+)$")
+
+
+def normalizar_codigo(codigo: str) -> str:
+    """Devuelve el codigo en su forma canonica: mayusculas y con guion.
+
+    «p04», «P 04» y «P-4» son el mismo participante que «P-04». Lo que no
+    encaje en letras seguidas de digitos se devuelve solo en mayusculas,
+    porque el dominio no decide como se llaman los codigos de otro estudio.
+    """
+    limpio = codigo.strip().upper()
+    m = _CODIGO.match(limpio)
+    if not m:
+        return limpio
+    letras, numero = m.groups()
+    return f"{letras}-{int(numero):02d}"
 
 # Las bandas son las del formulario. Antes se guardaba un entero de anios y se
 # derivaban tres bandas propias que no coincidian con los cuatro tramos de la
@@ -32,6 +54,7 @@ class Participant:
     def __post_init__(self) -> None:
         if not self.anonymous_code or not self.anonymous_code.strip():
             raise ValueError("El participante exige un código anónimo")
+        self.anonymous_code = normalizar_codigo(self.anonymous_code)
         if self.experience_band not in BANDAS_DE_EXPERIENCIA:
             raise ValueError(
                 f"Banda de experiencia desconocida: {self.experience_band!r}. "

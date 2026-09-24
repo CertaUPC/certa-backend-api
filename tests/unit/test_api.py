@@ -1388,6 +1388,25 @@ class TestEntradaDelParticipante:
         assert len(cuerpo["order"]) == 2
         assert {cuerpo["first_batch"], cuerpo["second_batch"]} == {"A", "B"}
 
+    async def test_el_guion_del_acta_no_deja_fuera_a_nadie(self, client):
+        """El acta que la persona firma dice «P-04» y el campo pedia «P04».
+
+        Quien dicta lee lo que tiene delante, de modo que un caracter de mas
+        dejaba el acceso en 401 con la credencial vigente y la persona sentada.
+        """
+        token, pid = await self._preparar(client, codigo="P04")
+        await client.post(
+            "/api/v1/auth/grants",
+            json={"subject_kind": "participation", "subject_id": pid},
+            headers=_auth(token),
+        )
+        for tecleado in ("P-04", "P04", "p-4", "p 04"):
+            r = await client.post(
+                "/api/v1/auth/participant", json={"anonymous_code": tecleado}
+            )
+            assert r.status_code == 200, f"{tecleado}: {r.text}"
+            assert r.json()["participant_id"] == pid
+
     async def test_lo_que_recibe_no_abre_nada_ajeno(self, client):
         """Es la propiedad que justifica todo esto."""
         token, pid = await self._preparar(client)
@@ -1595,11 +1614,15 @@ class TestElListadoDeParticipantes:
 
     async def test_cada_uno_lleva_su_propio_reparto(self, client):
         token = await _token(client)
+        # Se dan de alta sin guion a proposito: el codigo se guarda en su
+        # forma canonica, y es esa la que el listado tiene que devolver.
         altas = {
-            "PIL1": await self._alta(client, token, "PIL1", True),
-            "REA1": await self._alta(client, token, "REA1", False),
-            "REA2": await self._alta(client, token, "REA2", False),
+            "PIL-01": await self._alta(client, token, "PIL1", True),
+            "REA-01": await self._alta(client, token, "REA1", False),
+            "REA-02": await self._alta(client, token, "REA2", False),
         }
+        for canonico, alta in altas.items():
+            assert alta["anonymous_code"] == canonico
 
         listado = (
             await client.get("/api/v1/experiment/participants", headers=_auth(token))
