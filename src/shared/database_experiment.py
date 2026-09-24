@@ -121,28 +121,7 @@ class TransformationRow(Base):
     )
 
 
-class BatchItemRow(Base):
-    """Qué hallazgos componen cada mitad del lote de las sesiones.
-
-    El 4.5 exige que el lote quede fijado antes de reclutar. Fijarlo en un
-    fichero no basta: si el servicio no lo conoce, la pantalla sirve la
-    ejecución entera y el participante ve un corpus en vez de doce alertas.
-    Esta tabla es ese lote, y vive aquí y no junto a los hallazgos porque el
-    reparto es una decisión del experimento, no una propiedad del hallazgo.
-
-    Identidad y no clave foránea, como el resto del contexto.
-    """
-
-    __tablename__ = "session_batch_items"
-
-    finding_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    batch: Mapped[str] = mapped_column(String(10))
-    # Orden dentro de la mitad. El reparto es reproducible y se registra, de
-    # modo que dos participantes de la misma condición ven la misma secuencia.
-    position: Mapped[int] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    __table_args__ = (
-        UniqueConstraint("batch", "position", name="uq_session_batch_position"),
-        Index("ix_session_batch", "batch", "position"),
-    )
+# El lote de las sesiones vivia aqui, en `session_batch_items`. Pasó a
+# `worklists` y `worklist_items` del contexto de validación, que generalizan
+# la misma idea: una selección de hallazgos dentro de una ejecución. La tabla
+# se retira en la migración 20260924_4b8c2d1e6f30.

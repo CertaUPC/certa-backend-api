@@ -28,7 +28,6 @@ from src.shared.database import Base
 # identidad. Cada una está comentada en el modelo con su razón.
 CRUCES_DE_CONTEXTO = {
     ("decisions", "finding_id"),
-    ("session_batch_items", "finding_id"),
     ("transformations", "original_finding_id"),
     ("transformations", "transformed_finding_id"),
     # La credencial apunta a un proyecto o a un participante segun su tipo.

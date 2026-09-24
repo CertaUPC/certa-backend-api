@@ -12,7 +12,7 @@ mientras que el de origen apunta a una carpeta de Windows que alli no significa
 nada. La ejecucion se recuelga del proyecto que se indique.
 
 Y el lote congelado del estudio viaja como `worklists` mas `worklist_items`,
-que es donde vive desde que `session_batch_items` quedo atras.
+que es donde vive.
 """
 
 import argparse
@@ -87,6 +87,13 @@ async def remote_columns(conn, table: str) -> dict[str, str]:
     return {r["column_name"]: r["data_type"] for r in rows}
 
 
+def _hay_tabla(db: sqlite3.Connection, nombre: str) -> bool:
+    return db.execute(
+        "select 1 from sqlite_master where type='table' and name=?",
+        (nombre,),
+    ).fetchone() is not None
+
+
 def local_rows(db: sqlite3.Connection, query: str, *params) -> list[sqlite3.Row]:
     db.row_factory = sqlite3.Row
     return db.execute(query, params).fetchall()
@@ -133,12 +140,26 @@ async def run(args) -> int:
     verdicts = local_rows(
         db, f"select * from verdicts where finding_id in ({marks})", *ids
     )
-    batch = local_rows(
-        db,
-        f"select * from session_batch_items where finding_id in ({marks}) "
-        "order by batch, position",
-        *ids,
-    )
+    # El lote vive en worklists. Las bases anteriores a ese cambio lo tienen
+    # en session_batch_items, y se lee de ahi mientras exista.
+    if _hay_tabla(db, "worklist_items"):
+        batch = local_rows(
+            db,
+            "select i.finding_id, i.bucket as batch, i.position, w.frozen_at "
+            "as created_at from worklist_items i join worklists w on "
+            f"w.id = i.worklist_id where i.finding_id in ({marks}) "
+            "order by i.bucket, i.position",
+            *ids,
+        )
+    elif _hay_tabla(db, "session_batch_items"):
+        batch = local_rows(
+            db,
+            f"select * from session_batch_items where finding_id in ({marks}) "
+            "order by batch, position",
+            *ids,
+        )
+    else:
+        batch = []
 
     print(f"En origen, colgando de {args.execution[:8]}:")
     print(f"  {len(findings):5d} hallazgos")
