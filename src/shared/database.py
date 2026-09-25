@@ -83,6 +83,8 @@ class ExecutionRow(Base):
     )
     tool_name: Mapped[str] = mapped_column(String(100), default="semgrep-oss")
     ruleset_version: Mapped[str] = mapped_column(String(100))
+    # El nombre que le puso quien la cargó, si le puso alguno.
+    label: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pendiente")
     scope: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_findings: Mapped[int] = mapped_column(Integer, default=0)

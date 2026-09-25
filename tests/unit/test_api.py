@@ -357,6 +357,52 @@ class TestIngest:
 
         assert ejecucion.created_by == autor.id
 
+    async def test_la_ejecucion_se_puede_nombrar_al_cargarla(self, client):
+        """Ocho caracteres de un UUID no ubican una corrida entre varias.
+
+        El nombre es opcional: la ingesta por línea de órdenes no lo pide, y
+        ahí la pantalla cae a la fecha.
+        """
+        token = await _token(client)
+        r = await client.post(
+            "/api/v1/executions",
+            json={
+                "project_id": str(PROJECT_ID),
+                "sarif": sarif_doc(),
+                "label": "Barrido de CWE-89, viernes",
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["execution"]["id"]
+        assert r.json()["execution"]["label"] == "Barrido de CWE-89, viernes"
+
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["label"] == "Barrido de CWE-89, viernes"
+
+    async def test_un_nombre_de_espacios_no_es_un_nombre(self, client):
+        """Guardarlo dejaría un título vacío en la pantalla."""
+        token = await _token(client)
+        r = await client.post(
+            "/api/v1/executions",
+            json={"project_id": str(PROJECT_ID), "sarif": sarif_doc(), "label": "   "},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["execution"]["label"] is None
+
+    async def test_sin_nombre_la_ejecucion_se_crea_igual(self, client):
+        token = await _token(client)
+        r = await client.post(
+            "/api/v1/executions",
+            json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["execution"]["label"] is None
+
     async def test_rejects_wrong_sarif_version(self, client):
         token = await _token(client)
         r = await client.post(

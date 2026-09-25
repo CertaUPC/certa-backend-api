@@ -29,6 +29,11 @@ class Execution:
     ruleset_version: str
     tool_name: str = "semgrep-oss"
     status: ExecutionStatus = ExecutionStatus.PENDING
+    # Como la llama quien la cargó. Ocho caracteres de un identificador no
+    # ubican nada: con dos corridas del mismo proyecto en la lista, encontrar
+    # la de ayer era abrirlas una por una. Opcional, porque inventar «Corrida
+    # 1» sería escribir un dato que nadie dio.
+    label: str | None = None
     total_findings: int = 0
     validated_findings: int = 0
     scope: ScopeFilter = field(default_factory=ScopeFilter.unrestricted)

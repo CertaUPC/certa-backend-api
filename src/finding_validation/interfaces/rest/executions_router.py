@@ -52,6 +52,7 @@ def _to_response(e: Execution, project_name: str = "") -> ExecutionResponse:
         project_name=project_name,
         tool_name=e.tool_name,
         ruleset_version=e.ruleset_version,
+        label=e.label,
         status=e.status.value,
         total_findings=e.total_findings,
         validated_findings=e.validated_findings,
@@ -87,7 +88,11 @@ async def ingest(
 
     try:
         result = await container.ingest_service(session).from_payload(
-            body.project_id, body.sarif, scope, created_by=user.user_id
+            body.project_id,
+            body.sarif,
+            scope,
+            created_by=user.user_id,
+            label=body.label,
         )
     except SarifError as exc:
         # No cumple el esquema. Se rechaza sin dejar una ejecución a medias.

@@ -79,9 +79,10 @@ class IngestExecutionCommandService:
         payload: dict,
         scope: ScopeFilter | None = None,
         created_by: UUID | None = None,
+        label: str | None = None,
     ) -> IngestResult:
         return await self._ingest(
-            project_id, parse_sarif(payload), scope, created_by
+            project_id, parse_sarif(payload), scope, created_by, label
         )
 
     async def from_file(
@@ -103,6 +104,7 @@ class IngestExecutionCommandService:
         ingestion: SarifIngestion,
         scope: ScopeFilter | None,
         created_by: UUID | None = None,
+        label: str | None = None,
     ) -> IngestResult:
         alcance = scope or ScopeFilter.unrestricted()
         admitidos = alcance.apply(ingestion.findings)
@@ -125,6 +127,9 @@ class IngestExecutionCommandService:
             total_findings=len(admitidos),
             scope=alcance,
             created_by=created_by,
+            # Un nombre de espacios no es un nombre. Se guarda nulo para que la
+            # pantalla caiga a la fecha en vez de enseñar un título vacío.
+            label=(label or "").strip() or None,
         )
         await self._executions.save(execution)
         if admitidos:

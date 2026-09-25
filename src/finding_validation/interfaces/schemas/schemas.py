@@ -23,6 +23,9 @@ class IngestSarifRequest(BaseModel):
     project_id: UUID
     sarif: dict
     scope: ScopeRequest | None = None
+    # Opcional a propósito: quien carga desde la línea de órdenes no pone
+    # nombre, y la pantalla resuelve con la fecha.
+    label: str | None = Field(default=None, max_length=120)
 
 
 class AuditRequest(BaseModel):
@@ -137,6 +140,7 @@ class ExecutionResponse(BaseModel):
     project_name: str = ""
     tool_name: str
     ruleset_version: str
+    label: str | None = None
     status: str
     total_findings: int
     validated_findings: int
