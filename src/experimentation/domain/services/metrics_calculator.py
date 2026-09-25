@@ -116,7 +116,9 @@ class MetricsCalculator:
     def assess_run(self, verdict_labels: list[str]) -> RunQuality:
         """Detecta la respuesta degenerada antes de dar la corrida por buena."""
         if not verdict_labels:
-            return RunQuality(False, 0.0, "", "La corrida no produjo veredictos")
+            return RunQuality(
+                False, 0.0, "", "Todavía no hay veredictos que medir."
+            )
 
         counts: dict[str, int] = {}
         for label in verdict_labels:
@@ -129,17 +131,26 @@ class MetricsCalculator:
                 is_valid=False,
                 dominant_share=round(share, 4),
                 dominant_label=dominant_label,
+                # Lo decía en el vocabulario de quien mide: «distribución
+                # degenerada», «umbral de rechazo». Quien revisa alertas no
+                # tiene por qué conocerlo, y el aviso mas importante de la
+                # pantalla era el menos entendible.
                 reason=(
-                    f"El {share:.1%} de los veredictos es {dominant_label!r}, por "
-                    f"encima del umbral de rechazo del {DEGENERATE_THRESHOLD:.0%}. "
-                    f"La corrida no es válida para la comparación."
+                    f"No te fíes de estos números. El modelo contestó "
+                    f"«{dominant_label}» en el {share:.1%} de las alertas, casi "
+                    f"siempre lo mismo, así que acertar tanto no dice nada "
+                    f"sobre si sabe distinguir."
                 ),
             )
         return RunQuality(
             is_valid=True,
             dominant_share=round(share, 4),
             dominant_label=dominant_label,
-            reason=f"Distribución admisible, la clase mayoritaria cubre el {share:.1%}",
+            reason=(
+                f"Estos números se pueden leer: el modelo no contestó siempre "
+                f"lo mismo. Su respuesta más repetida, «{dominant_label}», salió "
+                f"en el {share:.1%} de las alertas."
+            ),
         )
 
     def agreement(self, runs: list[list[str]]) -> float:
