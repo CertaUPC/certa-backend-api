@@ -16,3 +16,4 @@ certa.db.*
 # Volcado de lo que se retira de un participante. Lleva su ficha,
 # de modo que no viaja al repositorio aunque el codigo sea anonimo.
 retirado-*.json
+demo-proyectos*.json
