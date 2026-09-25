@@ -14,6 +14,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import src.shared.database_experiment  # noqa: F401  registra las tablas
+from src.finding_validation.infrastructure.persistence.sql_repositories import (
+    SqlExecutionRepository,
+)
 from src.finding_validation.infrastructure.external.scripted_language_model import (
     ScriptedLanguageModel,
     exploitable,
@@ -799,6 +802,70 @@ class TestExperiment:
             await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
         ).json()
         assert detalle["status"] == "pendiente"
+
+    async def test_la_corrida_tomada_dice_quien_la_tiene_y_desde_cuando(
+        self, client
+    ):
+        """Una que se quedó en proceso hay que poder distinguirla de una viva.
+
+        El trabajador de la plataforma gratuita se reinicia, y la corrida que
+        tenía reclamada queda en proceso para siempre. Quien mira la pantalla
+        decide si devolverla a la cola, y para eso necesita saber quién la tomó
+        y cuánto lleva así.
+        """
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        container = app.state.container
+        async with container.sessions() as s:
+            tomada = await SqlExecutionRepository(s).claim_next_pending("worker-1")
+        assert tomada is not None
+
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["status"] == "en_proceso"
+        assert detalle["claimed_by"] == "worker-1"
+        assert detalle["started_at"] is not None
+
+    async def test_devolver_a_la_cola_la_que_quedo_en_proceso(self, client):
+        """Reanudar no es solo para las fallidas.
+
+        El trabajador que muere a media corrida no deja rastro de fallo: la
+        deja en proceso, y el estado que la cola consulta es ese. Sin esta
+        transición la corrida no vuelve a tomarse nunca.
+        """
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+        container = app.state.container
+        async with container.sessions() as s:
+            await SqlExecutionRepository(s).claim_next_pending("worker-caido")
+
+        r = await client.post(
+            f"/api/v1/executions/{eid}/resume", headers=_auth(token)
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "pendiente"
+        assert r.json()["claimed_by"] is None
+
+        # Y con eso vuelve a estar al alcance del siguiente trabajador.
+        await _procesar(client)
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["validated_findings"] == 1
 
     async def test_encolar_dos_veces_no_duplica_el_trabajo(self, client):
         token = await _token(client)

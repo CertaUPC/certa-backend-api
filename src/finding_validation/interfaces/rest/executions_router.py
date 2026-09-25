@@ -59,6 +59,8 @@ def _to_response(e: Execution, project_name: str = "") -> ExecutionResponse:
         progress=e.progress,
         progress_text=e.describe_progress(),
         failure_reason=e.failure_reason,
+        claimed_by=e.claimed_by,
+        started_at=e.started_at,
         created_at=e.created_at,
     )
 

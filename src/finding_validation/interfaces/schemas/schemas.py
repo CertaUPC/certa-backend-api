@@ -144,6 +144,11 @@ class ExecutionResponse(BaseModel):
     progress: float
     progress_text: str
     failure_reason: str | None = None
+    # Quién la tomó y desde cuándo. Sin esto, una corrida que se quedó en
+    # proceso porque el trabajador murió no se distingue de una que avanza, y
+    # decidir si devolverla a la cola sería a ciegas.
+    claimed_by: str | None = None
+    started_at: datetime | None = None
     created_at: datetime
 
 
