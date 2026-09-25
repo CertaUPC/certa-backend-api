@@ -14,6 +14,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import src.shared.database_experiment  # noqa: F401  registra las tablas
+from src.finding_validation.infrastructure.external.code_reader_registry import (
+    CodeReaderRegistry,
+)
 from src.finding_validation.infrastructure.persistence.sql_repositories import (
     SqlExecutionRepository,
 )
@@ -882,6 +885,69 @@ class TestExperiment:
         )
         assert segunda.status_code == 202
         assert segunda.json()["status"] == "pendiente"
+
+
+class TestLaSenalDelTrabajador:
+    """Lo que el trabajador deja dicho cuando no puede ni empezar.
+
+    Quien carga un SARIF por la web no ve el disco del trabajador. Si el
+    repositorio no está ahí, la corrida vuelve a la cola sin consumirse, y
+    antes de esto volvía indistinguible de una recién cargada: la pantalla
+    decía «en espera» y no había forma de saber que ya se intentó.
+    """
+
+    async def test_el_repositorio_ausente_queda_escrito_en_la_ejecucion(
+        self, client, tmp_path
+    ):
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        # Este trabajador no tiene ese código en su disco.
+        ausente = tmp_path / "no-clonado"
+        app.state.container.code_reader = CodeReaderRegistry(ausente)
+        await _procesar(client)
+
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["status"] == "pendiente", "vuelve a la cola sin consumirse"
+        nota = detalle["last_attempt_note"]
+        assert nota, "sin nota, la corrida se ve igual que una recién cargada"
+        assert str(ausente) in nota, "la nota dice la ruta que se intentó"
+        assert detalle["last_attempt_at"] is not None
+
+    async def test_el_intento_que_si_avanza_borra_la_nota(self, client, tmp_path):
+        """Una nota vieja describiría una corrida que ya no es esa."""
+        token = await _token(client)
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+
+        original = app.state.container.code_reader
+        app.state.container.code_reader = CodeReaderRegistry(tmp_path / "no-clonado")
+        await _procesar(client)
+        assert (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()["last_attempt_note"]
+
+        app.state.container.code_reader = original
+        await _procesar(client)
+
+        detalle = (
+            await client.get(f"/api/v1/executions/{eid}", headers=_auth(token))
+        ).json()
+        assert detalle["validated_findings"] == 1
+        assert detalle["last_attempt_note"] is None
 
 
 class TestAuditoriaDelProducto:

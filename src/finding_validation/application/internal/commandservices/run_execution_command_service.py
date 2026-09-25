@@ -26,6 +26,20 @@ logger = logging.getLogger(__name__)
 FALLOS_DE_CONTEXTO_SEGUIDOS = 3
 
 
+def _sin_contexto(cuantos: int, ultimo: str | None) -> str:
+    """La explicación que se guarda y que la pantalla muestra tal cual."""
+    cuenta = (
+        "El único hallazgo que se intentó se quedó"
+        if cuantos == 1
+        else f"{cuantos} hallazgos seguidos se quedaron"
+    )
+    return (
+        f"{cuenta} sin contexto recuperable, y ninguno se validó. El "
+        f"repositorio no parece estar donde este trabajador lo busca, así que "
+        f"la ejecución vuelve a la cola sin consumirse. {ultimo or ''}"
+    ).strip()
+
+
 @dataclass
 class RunReport:
     execution_id: UUID
@@ -109,6 +123,7 @@ class RunExecutionCommandService:
         # para dar por hecho que el problema es la configuracion y no el
         # hallazgo. Ver el aborto mas abajo.
         seguidos = 0
+        ultimo_fallo_de_contexto: str | None = None
 
         for finding in pending:
             try:
@@ -137,13 +152,11 @@ class RunExecutionCommandService:
                 # cola en vez de consumirla.
                 if outcome.context_failed and report.validated == 0:
                     seguidos += 1
+                    ultimo_fallo_de_contexto = outcome.error
                     if seguidos >= FALLOS_DE_CONTEXTO_SEGUIDOS:
                         report.interrupted = True
-                        report.interruption_reason = (
-                            f"{seguidos} hallazgos seguidos sin contexto "
-                            f"recuperable y ninguno validado. El repositorio no "
-                            f"parece estar donde este trabajador lo busca; la "
-                            f"ejecución vuelve a la cola sin consumirse."
+                        report.interruption_reason = _sin_contexto(
+                            seguidos, ultimo_fallo_de_contexto
                         )
                         logger.error(report.interruption_reason)
                         break
@@ -158,13 +171,39 @@ class RunExecutionCommandService:
 
         await self._rank(execution)
 
+        # Un lote más corto que el umbral no llega a disparar la red de arriba.
+        # Sin esto, cargar un SARIF de dos hallazgos contra un repositorio que
+        # este trabajador no tiene dejaba la corrida reclamada para siempre:
+        # todo falló por contexto, nada se validó, y nadie lo decía.
+        if (
+            not report.interrupted
+            and report.validated == 0
+            and report.failed
+            and seguidos == report.failed
+        ):
+            report.interrupted = True
+            report.interruption_reason = _sin_contexto(
+                seguidos, ultimo_fallo_de_contexto
+            )
+
         if report.interrupted:
             # Se devuelve a la cola en vez de marcarla fallida: lo validado se
             # conserva y otro intento retoma donde quedó.
+            #
+            # La razón se anota antes de devolverla. Volver a la cola borra
+            # `failure_reason`, de modo que sin esta nota la corrida quedaba
+            # igual que una recién cargada y quien la subió no tenía cómo saber
+            # que ya se intentó, ni qué ruta se buscó.
+            execution.note_attempt(report.interruption_reason or "Sin causa registrada")
             execution.resume()
             await self._executions.save(execution)
             logger.warning("Ejecución %s interrumpida: %s", execution.id, report.interruption_reason)
             return report
+
+        # Este intento sí avanzó, de modo que lo que dijera el anterior ya no
+        # describe la corrida.
+        if report.validated:
+            execution.clear_attempt_note()
 
         # Se comprueba el estado y no solo el pendiente: volver a correr una
         # ejecucion ya terminada es legitimo desde la linea de comandos, y sin

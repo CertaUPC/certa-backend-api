@@ -80,9 +80,16 @@ class WindowCodeReader:
         self, finding: Finding, caller_depth: int = 2
     ) -> CodeContext:
         path = self.repository_root / finding.location.file_path
+        if not self.repository_root.exists():
+            raise CodeUnavailable(
+                f"No existe el repositorio en {self.repository_root}. "
+                f"Se buscaba {finding.location.file_path} dentro de él."
+            )
         if not path.exists():
             raise CodeUnavailable(
-                f"El archivo {finding.location.file_path} ya no existe en el repositorio"
+                f"No se encontró {path}. El repositorio sí está en "
+                f"{self.repository_root}, de modo que el archivo cambió de "
+                f"sitio o el SARIF viene de otro árbol."
             )
         try:
             source = path.read_text(encoding="utf-8", errors="replace")

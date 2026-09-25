@@ -183,6 +183,25 @@ class TestUnknownLanguageDegrades:
 
 class TestMissingFile:
     async def test_reports_missing_file(self, repo):
+        """El aviso nombra la ruta que se intentó, y dónde sí está el árbol.
+
+        Quien carga un SARIF por la web no ve el disco del trabajador. Decir
+        «el archivo ya no existe» no le permite distinguir un archivo que se
+        movió de un repositorio que este trabajador no tiene.
+        """
         reader = CodeReaderRegistry(repo)
-        with pytest.raises(CodeUnavailable, match="ya no existe"):
+        with pytest.raises(CodeUnavailable, match="No se encontró") as fallo:
             await reader.recover_context(_finding("Borrado.java", 3))
+        assert str(repo / "Borrado.java") in str(fallo.value)
+
+    async def test_reports_a_repository_that_is_not_there(self, tmp_path):
+        """El repositorio ausente se nombra aparte del archivo ausente.
+
+        Es el caso del trabajador que no tiene ese código en su disco, y el
+        que hay que poder leer en la pantalla para saber qué configurar.
+        """
+        ausente = tmp_path / "no-clonado"
+        reader = CodeReaderRegistry(ausente)
+        with pytest.raises(CodeUnavailable, match="No existe el repositorio") as fallo:
+            await reader.recover_context(_finding("UserDao.java", 3))
+        assert str(ausente) in str(fallo.value)

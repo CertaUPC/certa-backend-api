@@ -98,6 +98,12 @@ class ExecutionRow(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     context_purged: Mapped[bool] = mapped_column(Boolean, default=False)
+    # La señal del trabajador: qué dejó dicho el último intento. Sobrevive a
+    # volver a la cola, que es cuando hace falta leerla.
+    last_attempt_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

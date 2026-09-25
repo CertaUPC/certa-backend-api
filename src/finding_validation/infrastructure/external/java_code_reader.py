@@ -45,9 +45,16 @@ class JavaCodeReader:
 
     def _read(self, relative_path: str) -> str:
         path = self.repository_root / relative_path
+        if not self.repository_root.exists():
+            raise CodeUnavailable(
+                f"No existe el repositorio en {self.repository_root}. "
+                f"Se buscaba {relative_path} dentro de él."
+            )
         if not path.exists():
             raise CodeUnavailable(
-                f"El archivo {relative_path} ya no existe en el repositorio"
+                f"No se encontró {path}. El repositorio sí está en "
+                f"{self.repository_root}, de modo que el archivo cambió de "
+                f"sitio o el SARIF viene de otro árbol."
             )
         try:
             return path.read_text(encoding="utf-8", errors="replace")

@@ -48,6 +48,8 @@ class SqlExecutionRepository:
             validated_findings=e.validated_findings,
             claimed_by=e.claimed_by,
             failure_reason=e.failure_reason,
+            last_attempt_note=e.last_attempt_note,
+            last_attempt_at=e.last_attempt_at,
             context_purged=e.context_purged,
             created_by=str(e.created_by) if e.created_by else None,
             started_at=e.started_at,
@@ -68,6 +70,8 @@ class SqlExecutionRepository:
             scope=ScopeFilter.unrestricted(),
             claimed_by=r.claimed_by,
             failure_reason=r.failure_reason,
+            last_attempt_note=r.last_attempt_note,
+            last_attempt_at=r.last_attempt_at,
             context_purged=r.context_purged,
             created_by=UUID(r.created_by) if r.created_by else None,
             started_at=r.started_at,
@@ -85,6 +89,8 @@ class SqlExecutionRepository:
             existing.validated_findings = execution.validated_findings
             existing.claimed_by = execution.claimed_by
             existing.failure_reason = execution.failure_reason
+            existing.last_attempt_note = execution.last_attempt_note
+            existing.last_attempt_at = execution.last_attempt_at
             existing.context_purged = execution.context_purged
             existing.started_at = execution.started_at
             existing.finished_at = execution.finished_at

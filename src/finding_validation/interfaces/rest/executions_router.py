@@ -61,6 +61,8 @@ def _to_response(e: Execution, project_name: str = "") -> ExecutionResponse:
         failure_reason=e.failure_reason,
         claimed_by=e.claimed_by,
         started_at=e.started_at,
+        last_attempt_note=e.last_attempt_note,
+        last_attempt_at=e.last_attempt_at,
         created_at=e.created_at,
     )
 

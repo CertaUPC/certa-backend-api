@@ -36,6 +36,13 @@ class Execution:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     failure_reason: str | None = None
+    # Lo que el último intento dejó dicho, aunque la corrida volviera a la
+    # cola. `failure_reason` no servía para esto: reanudar lo borra, y devolver
+    # a la cola es justo lo que hace el trabajador cuando no encuentra el
+    # repositorio, de modo que el diagnóstico se perdía y la pantalla solo
+    # podía decir «en espera» sin explicar de qué.
+    last_attempt_note: str | None = None
+    last_attempt_at: datetime | None = None
     context_purged: bool = False
     # Quién la lanzó. Opcional porque las ejecuciones anteriores a que se
     # registrara el autor existen y no se les puede inventar uno, y porque la
@@ -79,6 +86,11 @@ class Execution:
 
         Lo ya validado se conserva: al retomarla, el trabajador salta los
         hallazgos que ya tienen veredicto y no vuelve a pagar por ellos.
+
+        La nota del último intento no se borra aquí. Si se borrara, una corrida
+        que vuelve a la cola porque el trabajador no encuentra el repositorio
+        quedaría idéntica a una recién cargada, y quien la subió no tendría
+        cómo saber que ya se intentó y qué ruta se buscó.
         """
         if self.status not in (ExecutionStatus.FAILED, ExecutionStatus.IN_PROGRESS):
             raise ValueError(
@@ -88,6 +100,23 @@ class Execution:
         self.claimed_by = None
         self.failure_reason = None
         self.finished_at = None
+
+    def note_attempt(self, note: str, now: datetime | None = None) -> None:
+        """Deja dicho por qué el último intento no pudo avanzar.
+
+        Es la señal del trabajador hacia quien mira la pantalla. Sin ella, una
+        corrida que rebota entre la cola y el trabajador no se distingue de una
+        que espera su turno.
+        """
+        if not note:
+            raise ValueError("Una nota vacía no explica nada")
+        self.last_attempt_note = note
+        self.last_attempt_at = now or datetime.now(timezone.utc)
+
+    def clear_attempt_note(self) -> None:
+        """Borra la nota porque el intento siguiente sí avanzó."""
+        self.last_attempt_note = None
+        self.last_attempt_at = None
 
     # -- consultas ---------------------------------------------------------
     @property

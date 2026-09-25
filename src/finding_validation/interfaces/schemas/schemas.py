@@ -149,6 +149,11 @@ class ExecutionResponse(BaseModel):
     # decidir si devolverla a la cola sería a ciegas.
     claimed_by: str | None = None
     started_at: datetime | None = None
+    # Lo que el último intento dejó dicho. Es la señal del trabajador hacia la
+    # pantalla: sin ella, una corrida que vuelve a la cola porque el
+    # repositorio no está se ve igual que una que espera su turno.
+    last_attempt_note: str | None = None
+    last_attempt_at: datetime | None = None
     created_at: datetime
 
 
