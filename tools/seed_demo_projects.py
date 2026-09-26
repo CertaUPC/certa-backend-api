@@ -116,9 +116,15 @@ JUSTIFICA = {
 }
 
 
-def _huella(execution_id: str, ruta: str, linea: int, regla: str) -> str:
-    crudo = f"{execution_id}|{ruta}|{linea}|{regla}"
-    return hashlib.sha256(crudo.encode()).hexdigest()[:40]
+def _huella(ruta: str, linea: int, regla: str) -> str:
+    """La huella es del contenido, no de la corrida.
+
+    Llevaba dentro el identificador de la ejecución, así que dos corridas del
+    mismo proyecto no compartían ni un hallazgo y compararlas daba «todo
+    aparece, todo desaparece, cero sigue ahí», que es justo lo que la pantalla
+    de comparar avisa como configuración mal hecha.
+    """
+    return hashlib.sha256(f"{ruta}|{linea}|{regla}".encode()).hexdigest()[:40]
 
 
 def _proyectos(owner_id: str, ahora: datetime) -> list[dict]:
@@ -180,6 +186,43 @@ def _proyectos(owner_id: str, ahora: datetime) -> list[dict]:
     ]
 
 
+def _catalogo(p: dict, cuantas: int, azar: random.Random) -> list[tuple]:
+    """Las alertas que ese repositorio tiene, sin repetir sitio.
+
+    Una corrida no inventa hallazgos nuevos cada vez: encuentra los que el
+    código tiene. Dos corridas seguidas comparten casi todo, y lo poco que
+    cambia es lo que se arregló o lo que se acaba de escribir.
+    """
+    vistas: set[tuple[str, int]] = set()
+    catalogo: list[tuple] = []
+    while len(catalogo) < cuantas:
+        regla, cwe, severidad, mensaje = REGLAS[azar.randrange(len(REGLAS))]
+        clase = CLASES[azar.randrange(len(CLASES))]
+        ruta = f"src/main/java/{p['paquete'].replace('.', '/')}/{clase}.java"
+        linea = azar.randint(12, 240)
+        if (ruta, linea) in vistas:
+            continue
+        vistas.add((ruta, linea))
+        catalogo.append((regla, cwe, severidad, mensaje, ruta, linea))
+    return catalogo
+
+
+# Cuántas alertas se corrigen entre una corrida y la siguiente. Al desplazar
+# la ventana sobre el catálogo, las de abajo desaparecen y asoman otras nuevas,
+# que es lo que pasa en un repositorio vivo.
+CORREGIDAS_ENTRE_CORRIDAS = 30
+
+
+def _alertas_de(cuantas: int, catalogo: list[tuple], orden: int) -> list[tuple]:
+    """Las de esta corrida: casi las mismas que la anterior, no otras.
+
+    Las primeras del catálogo son las que ya se arreglaron cuando llega la
+    corrida siguiente, y las últimas son código escrito desde entonces.
+    """
+    desde = orden * CORREGIDAS_ENTRE_CORRIDAS
+    return catalogo[desde : desde + cuantas]
+
+
 async def crear(sesion, owner_id: str) -> dict:
     azar = random.Random(SEMILLA)
     ahora = datetime.now(timezone.utc)
@@ -221,7 +264,15 @@ async def crear(sesion, owner_id: str) -> dict:
         # que el proyecto al que apunta.
         await sesion.flush()
 
-        for c in p["corridas"]:
+        # Un solo catálogo por proyecto, del tamaño de la corrida más larga.
+        catalogo = _catalogo(
+            p,
+            max(c["hallazgos"] for c in p["corridas"])
+            + CORREGIDAS_ENTRE_CORRIDAS * len(p["corridas"]),
+            azar,
+        )
+
+        for orden, c in enumerate(p["corridas"]):
             ejecucion_id = str(uuid4())
             nacida = ahora - c["hace"]
             sesion.add(
@@ -250,11 +301,9 @@ async def crear(sesion, owner_id: str) -> dict:
             creado["ejecuciones"].append(ejecucion_id)
             await sesion.flush()
 
-            for i in range(c["hallazgos"]):
-                regla, cwe, severidad, mensaje = REGLAS[azar.randrange(len(REGLAS))]
-                clase = CLASES[azar.randrange(len(CLASES))]
-                ruta = f"src/main/java/{p['paquete'].replace('.', '/')}/{clase}.java"
-                linea = azar.randint(12, 240)
+            for i, (regla, cwe, severidad, mensaje, ruta, linea) in enumerate(
+                _alertas_de(c["hallazgos"], catalogo, orden)
+            ):
                 hallazgo_id = str(uuid4())
                 juzgado = i < c["juzgados"]
 
@@ -269,7 +318,7 @@ async def crear(sesion, owner_id: str) -> dict:
                         start_line=linea,
                         end_line=linea + azar.randint(0, 3),
                         message=mensaje,
-                        fingerprint=_huella(ejecucion_id, ruta, linea, regla),
+                        fingerprint=_huella(ruta, linea, regla),
                         known_truth=None,
                         created_at=nacida,
                     )
