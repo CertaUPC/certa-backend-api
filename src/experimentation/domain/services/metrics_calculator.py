@@ -113,6 +113,15 @@ class MetricsCalculator:
         """
         return verified_first_try / total if total else 0.0
 
+    # Los valores del dominio salen tal cual a la pantalla, y «no_explotable»
+    # con su guion bajo no es una palabra que nadie diga.
+    _EN_CASTELLANO = {
+        "explotable": "es real",
+        "no_explotable": "es falsa alarma",
+        "indeterminado": "no se puede determinar",
+        "no_verificable": "no se puede comprobar",
+    }
+
     def assess_run(self, verdict_labels: list[str]) -> RunQuality:
         """Detecta la respuesta degenerada antes de dar la corrida por buena."""
         if not verdict_labels:
@@ -136,10 +145,11 @@ class MetricsCalculator:
                 # tiene por qué conocerlo, y el aviso mas importante de la
                 # pantalla era el menos entendible.
                 reason=(
-                    f"No te fíes de estos números. El modelo contestó "
-                    f"«{dominant_label}» en el {share:.1%} de las alertas, casi "
-                    f"siempre lo mismo, así que acertar tanto no dice nada "
-                    f"sobre si sabe distinguir."
+                    f"No te fíes de estos números. El asistente respondió "
+                    f"«{self._EN_CASTELLANO.get(dominant_label, dominant_label)}» "
+                    f"en el {share:.1%} de las alertas, casi siempre lo mismo, "
+                    f"así que acertar tanto no dice nada sobre si sabe "
+                    f"distinguir."
                 ),
             )
         return RunQuality(
@@ -147,9 +157,10 @@ class MetricsCalculator:
             dominant_share=round(share, 4),
             dominant_label=dominant_label,
             reason=(
-                f"Estos números se pueden leer: el modelo no contestó siempre "
-                f"lo mismo. Su respuesta más repetida, «{dominant_label}», salió "
-                f"en el {share:.1%} de las alertas."
+                f"Estos números se pueden leer: el asistente no respondió "
+                f"siempre lo mismo. Su respuesta más repetida, "
+                f"«{self._EN_CASTELLANO.get(dominant_label, dominant_label)}», "
+                f"salió en el {share:.1%} de las alertas."
             ),
         )
 
