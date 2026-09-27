@@ -113,6 +113,10 @@ class MetricsCalculator:
         """
         return verified_first_try / total if total else 0.0
 
+    # La frase empieza con el veredicto y sigue con el porqué, separados por
+    # dos puntos: la pantalla parte por ahí y pone el veredicto solo, en una
+    # línea, porque el párrafo entero costaba de leer de un vistazo.
+    #
     # Los valores del dominio salen tal cual a la pantalla, y «no_explotable»
     # con su guion bajo no es una palabra que nadie diga.
     _EN_CASTELLANO = {
@@ -145,7 +149,7 @@ class MetricsCalculator:
                 # tiene por qué conocerlo, y el aviso mas importante de la
                 # pantalla era el menos entendible.
                 reason=(
-                    f"No te fíes de estos resultados: el asistente respondió "
+                    f"No te fíes de estos números: el asistente respondió "
                     f"«{self._EN_CASTELLANO.get(dominant_label, dominant_label)}» "
                     f"en {share * 100:.0f} de cada 100 alertas. Cuando contesta "
                     f"casi siempre lo mismo, acertar no demuestra que sepa "
@@ -157,7 +161,7 @@ class MetricsCalculator:
             dominant_share=round(share, 4),
             dominant_label=dominant_label,
             reason=(
-                f"Estos resultados sirven para juzgarlo: el asistente no "
+                f"Se puede confiar en estos números: el asistente no "
                 f"contestó siempre lo mismo. Su respuesta más repetida, "
                 f"«{self._EN_CASTELLANO.get(dominant_label, dominant_label)}», "
                 f"salió en {share * 100:.0f} de cada 100 alertas."
