@@ -124,7 +124,10 @@ def _huella(ruta: str, linea: int, regla: str) -> str:
     aparece, todo desaparece, cero sigue ahí», que es justo lo que la pantalla
     de comparar avisa como configuración mal hecha.
     """
-    return hashlib.sha256(f"{ruta}|{linea}|{regla}".encode()).hexdigest()[:40]
+    # Entera, sin recortar: el dominio exige sesenta y cuatro hexadecimales y
+    # con cuarenta reventaba al leer los hallazgos, que es lo que hace el
+    # exportador. El CSV devolvía un error del servicio.
+    return hashlib.sha256(f"{ruta}|{linea}|{regla}".encode()).hexdigest()
 
 
 def _proyectos(owner_id: str, ahora: datetime) -> list[dict]:
