@@ -145,11 +145,11 @@ class MetricsCalculator:
                 # tiene por qué conocerlo, y el aviso mas importante de la
                 # pantalla era el menos entendible.
                 reason=(
-                    f"No te fíes de estos números. El asistente respondió "
+                    f"No te fíes de estos resultados: el asistente respondió "
                     f"«{self._EN_CASTELLANO.get(dominant_label, dominant_label)}» "
-                    f"en el {share:.1%} de las alertas, casi siempre lo mismo, "
-                    f"así que acertar tanto no dice nada sobre si sabe "
-                    f"distinguir."
+                    f"en {share * 100:.0f} de cada 100 alertas. Cuando contesta "
+                    f"casi siempre lo mismo, acertar no demuestra que sepa "
+                    f"distinguir una cosa de la otra."
                 ),
             )
         return RunQuality(
@@ -157,10 +157,10 @@ class MetricsCalculator:
             dominant_share=round(share, 4),
             dominant_label=dominant_label,
             reason=(
-                f"Estos números se pueden leer: el asistente no respondió "
-                f"siempre lo mismo. Su respuesta más repetida, "
+                f"Estos resultados sirven para juzgarlo: el asistente no "
+                f"contestó siempre lo mismo. Su respuesta más repetida, "
                 f"«{self._EN_CASTELLANO.get(dominant_label, dominant_label)}», "
-                f"salió en el {share:.1%} de las alertas."
+                f"salió en {share * 100:.0f} de cada 100 alertas."
             ),
         )
 
