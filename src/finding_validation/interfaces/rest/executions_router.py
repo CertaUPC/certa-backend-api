@@ -327,11 +327,17 @@ async def get_context(
 async def export_decisions(
     execution_id: UUID, session: SessionDep, user: UserDep
 ) -> StreamingResponse:
-    """Exporta el registro para el análisis estadístico.
+    """Exporta el registro de la ejecución para el análisis estadístico.
 
-    Ninguna columna lleva nombre ni correo: el participante viaja como
-    identificador anónimo, de modo que el archivo se pueda compartir sin
-    exponer identidades.
+    Una fila por veredicto del asistente: la alerta, la regla, qué respondió,
+    con cuánta seguridad, si el anclaje se comprobó y cuánto costó en intentos y
+    en tiempo.
+
+    No lleva ninguna columna de personas. Decía que el participante viajaba
+    como identificador anónimo, y eso describía otro archivo: aquí no hay
+    participante que anonimizar, porque lo que se exporta es lo que decidió la
+    cadena. Las decisiones de quien revisa viven en el esquema del estudio y se
+    consultan por su propio camino.
     """
     user.require("investigador", "lider_tecnico")
 
