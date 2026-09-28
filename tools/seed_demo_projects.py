@@ -35,9 +35,12 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from tools.demo_fragments import fragmento  # noqa: E402
+
 from src.iam.infrastructure.persistence import models as _cuentas  # noqa: F401,E402
 from src.shared import database_experiment as _estudio  # noqa: F401,E402
 from src.shared.database import (  # noqa: E402
+    ContextRow,
     ExecutionRow,
     FindingRow,
     ProjectMemberRow,
@@ -341,6 +344,29 @@ async def crear(sesion, owner_id: str) -> dict:
                     valor, confianza = "indeterminado", azar.uniform(0.3, 0.55)
 
                 anclado = valor != "indeterminado" and azar.random() < 0.92
+
+                # El fragmento que el asistente miró, que es la mitad de la
+                # pantalla de revisión. Sembrado sin él, el visor salía en
+                # negro y vacío mientras el panel de al lado prometía unas
+                # marcas que no estaban en ninguna parte.
+                frag = fragmento(cwe, linea, valor, azar)
+                sesion.add(
+                    ContextRow(
+                        id=str(uuid4()),
+                        finding_id=hallazgo_id,
+                        enclosing_function=frag["enclosing"],
+                        callers=frag["callers"],
+                        callees=frag["callees"],
+                        sanitizers=frag["sanitizers"],
+                        available_lines=frag["lineas"],
+                        source_expression=frag["expresion"],
+                        caller_depth=0 if frag["degradado"] else 1,
+                        callee_depth=0 if frag["degradado"] else 1,
+                        degraded_to_file=frag["degradado"],
+                        context_text=frag["texto"],
+                        created_at=nacida + timedelta(minutes=azar.randint(1, 40)),
+                    )
+                )
                 prioridad = round(
                     (0.7 if valor == "explotable" else 0.2)
                     + (0.2 if severidad == "error" else 0.0)
@@ -358,7 +384,7 @@ async def crear(sesion, owner_id: str) -> dict:
                         repetition=1,
                         value=valor,
                         confidence=round(confianza, 3),
-                        cited_lines=[linea, linea + 1] if anclado else [],
+                        cited_lines=frag["citadas"] if anclado else [],
                         anchor_verified=anclado,
                         attempts=1 if anclado else 2,
                         justification=JUSTIFICA[valor],
