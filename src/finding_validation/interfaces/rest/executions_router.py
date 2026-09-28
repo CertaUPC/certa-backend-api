@@ -403,10 +403,18 @@ async def purge_context(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No existe esa ejecución")
 
     policy = RetentionPolicy(container.settings.retention_days)
-    decision = policy.decide(
+    # A petición, no por ventana: esto lo dispara el botón de la pantalla, y
+    # ahí quien cargó el código está pidiendo soltarlo ahora. La ventana de
+    # retención gobierna el barrido automático, que es otra cosa.
+    decision = policy.decide_on_request(
         ExecutionRetentionState(
             closed_at=execution.finished_at,
             context_purged=execution.context_purged,
+            # Todavía no se consulta: la tabla de sesiones se relaciona con el
+            # lote y el participante, no con la ejecución, así que saber si una
+            # sesión en curso la está usando exige un camino que aún no existe.
+            # Queda declarado aquí para que no se lea como un guardia que
+            # funciona.
             used_in_active_session=False,
         )
     )

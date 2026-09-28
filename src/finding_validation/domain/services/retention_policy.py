@@ -45,6 +45,37 @@ class RetentionPolicy:
             raise ValueError("La ventana de retención no puede ser negativa")
         self._window = timedelta(days=retention_days)
 
+    def decide_on_request(
+        self, state: ExecutionRetentionState
+    ) -> RetentionDecision:
+        """Lo que se decide cuando alguien pide el borrado, no cuando toca.
+
+        La ventana gobierna el barrido automático: pasados los días, el texto
+        se va solo. Pero quien cargó el código puede soltarlo antes, y esa es
+        justamente la contrapartida de habérselo guardado. Exigirle esperar la
+        ventana entera convertía el botón de la pantalla en una promesa que el
+        servicio no cumplía: decía «puedes soltarlo cuando quieras» y el
+        servicio respondía que faltaban veintitantos días.
+        """
+        if state.context_purged:
+            return RetentionDecision(
+                RetentionOutcome.ALREADY_PURGED,
+                "El contexto de esta ejecución ya fue eliminado",
+            )
+
+        if state.used_in_active_session:
+            return RetentionDecision(
+                RetentionOutcome.KEEP_IN_USE,
+                "La ejecución participa en una sesión con participantes en curso",
+            )
+
+        return RetentionDecision(
+            RetentionOutcome.PURGE,
+            "Borrado a petición de quien cargó el código. Se elimina el texto "
+            "del contexto y se conservan las métricas y los veredictos, que no "
+            "dependen del contenido del código",
+        )
+
     def decide(
         self, state: ExecutionRetentionState, now: datetime | None = None
     ) -> RetentionDecision:
@@ -71,7 +102,15 @@ class RetentionPolicy:
                 "La ejecución sigue abierta",
             )
 
-        vencimiento = state.closed_at + self._window
+        # SQLite devuelve la fecha sin zona, PostgreSQL con ella. Comparar una
+        # con «ahora» reventaba con un 500 en la base local, y el dominio no
+        # tiene por qué saber en qué motor está guardado: se da por UTC, que es
+        # como se escribió.
+        cerrada = state.closed_at
+        if cerrada.tzinfo is None:
+            cerrada = cerrada.replace(tzinfo=timezone.utc)
+
+        vencimiento = cerrada + self._window
         if reference < vencimiento:
             restantes = (vencimiento - reference).days
             return RetentionDecision(
