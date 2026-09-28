@@ -1710,10 +1710,38 @@ class TestEntradaDelParticipante:
         assert alta.status_code == 201, alta.text
         return token, alta.json()["participant_id"]
 
+    async def _revocar_todo(self, client, token, pid):
+        """Apaga las credenciales que tenga, incluida la que emitió el alta."""
+        emitidas = (
+            await client.get(
+                "/api/v1/auth/grants",
+                params={"subject_kind": "participation", "subject_id": pid},
+                headers=_auth(token),
+            )
+        ).json()
+        for g in emitidas:
+            await client.delete(f"/api/v1/auth/grants/{g['id']}", headers=_auth(token))
+
+    async def test_el_alta_deja_el_acceso_habilitado(self, client):
+        """Registrar y habilitar son la misma peticion.
+
+        Eran dos, y bastaba con que la segunda no llegara para dejar a una
+        persona registrada y sin poder entrar: reintentar respondia que el
+        codigo ya existia, y quien se sentaba delante leia que no tenia sesion
+        abierta sin que nadie supiera por que.
+        """
+        _, pid = await self._preparar(client)
+        r = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "P01"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["participant_id"] == pid
+
     async def test_sin_credencial_vigente_no_entra(self, client):
-        """El codigo no es un secreto: lo que controla es que el investigador
-        haya emitido la credencial y que siga en su ventana."""
-        await self._preparar(client)
+        """El codigo no es un secreto: lo que controla es que exista una
+        credencial de participacion vigente."""
+        token, pid = await self._preparar(client)
+        await self._revocar_todo(client, token, pid)
         r = await client.post(
             "/api/v1/auth/participant", json={"anonymous_code": "P01"}
         )
@@ -1774,7 +1802,8 @@ class TestEntradaDelParticipante:
 
     async def test_un_codigo_inventado_se_rechaza_igual(self, client):
         """Y con el mismo mensaje, para no decir que codigos existen."""
-        await self._preparar(client)
+        token, pid = await self._preparar(client)
+        await self._revocar_todo(client, token, pid)
         uno = await client.post(
             "/api/v1/auth/participant", json={"anonymous_code": "P01"}
         )
@@ -1786,26 +1815,37 @@ class TestEntradaDelParticipante:
 
     async def test_una_credencial_revocada_cierra_la_puerta(self, client):
         token, pid = await self._preparar(client)
-        emitida = (
-            await client.post(
-                "/api/v1/auth/grants",
-                json={"subject_kind": "participation", "subject_id": pid},
-                headers=_auth(token),
-            )
-        ).json()
         assert (
             await client.post(
                 "/api/v1/auth/participant", json={"anonymous_code": "P01"}
             )
         ).status_code == 200
 
-        await client.delete(
-            f"/api/v1/auth/grants/{emitida['id']}", headers=_auth(token)
-        )
+        await self._revocar_todo(client, token, pid)
         r = await client.post(
             "/api/v1/auth/participant", json={"anonymous_code": "P01"}
         )
         assert r.status_code == 401
+
+    async def test_la_lista_dice_quien_puede_entrar(self, client):
+        """Quien dirige la sesion tiene a la persona delante: si el acceso se
+        cayo, lo tiene que ver en la tabla y no cuando la persona ya escribio
+        su codigo."""
+        token, pid = await self._preparar(client)
+        listado = (
+            await client.get("/api/v1/experiment/participants", headers=_auth(token))
+        ).json()
+        suyo = next(p for p in listado if p["participant_id"] == pid)
+        assert suyo["puede_entrar"]
+        assert suyo["access_expires_at"]
+
+        await self._revocar_todo(client, token, pid)
+        listado = (
+            await client.get("/api/v1/experiment/participants", headers=_auth(token))
+        ).json()
+        suyo = next(p for p in listado if p["participant_id"] == pid)
+        assert not suyo["puede_entrar"]
+        assert suyo["access_expires_at"] is None
 
 
 class TestLaSesionDelParticipante:

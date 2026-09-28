@@ -6,6 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
+from ....iam.domain.access_grant import GrantKind, mint
+from ....iam.infrastructure.persistence.grant_repository import (
+    SqlAccessGrantRepository,
+)
 from ....iam.interfaces.rest.dependencies import UserDep
 from ....shared.rest import SessionDep
 from ....finding_validation.interfaces.schemas.schemas import (
@@ -41,11 +45,17 @@ router = APIRouter(prefix="/api/v1/experiment", tags=["Experimento"])
 async def register_participant(
     body: ParticipantRequest, session: SessionDep, user: UserDep
 ) -> dict:
-    """Registra un participante y le asigna el orden de condiciones.
+    """Registra un participante, le asigna el orden y le habilita el acceso.
 
     Sin consentimiento no se almacena ningún dato. La asignación del orden se
     calcula desde el historial persistido, de modo que el reparto quede
     equilibrado y sea reproducible.
+
+    Las tres cosas van en una sola petición a propósito. Antes la pantalla
+    llamaba aquí y después a la emisión de credenciales, y bastaba con que la
+    segunda no llegara para dejar a una persona registrada y sin poder entrar:
+    reintentar respondía que el código ya existía, y quien se sentaba delante
+    leía que no tenía sesión abierta sin que nadie supiera por qué.
     """
     user.require("investigador")
 
@@ -60,7 +70,9 @@ async def register_participant(
     if await participants.get_by_code(codigo):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Ya existe un participante con el código {codigo}",
+            f"Ya existe un participante con el código {codigo}. Si es quien "
+            f"está sentado ahí, habilítale el acceso desde la tabla en lugar "
+            f"de volver a registrarlo.",
         )
 
     try:
@@ -83,9 +95,22 @@ async def register_participant(
     assignment = Counterbalancer().assign(await sessions.existing_orders())
     session_id = await sessions.create(participant.id, assignment)
 
+    # La credencial, aquí mismo. El token en claro no se devuelve porque nadie
+    # lo teclea: lo canjea el servicio cuando la persona escribe su código.
+    credencial, _ = mint(
+        subject_kind=GrantKind.PARTICIPATION,
+        subject_id=str(participant.id),
+        issued_by=str(user.user_id) if user.user_id else None,
+        label=f"Sesión de {participant.anonymous_code}",
+    )
+    await SqlAccessGrantRepository(session).save(credencial)
+
     return {
         "participant_id": str(participant.id),
         "session_id": str(session_id),
+        "access_expires_at": (
+            credencial.expires_at.isoformat() if credencial.expires_at else None
+        ),
         # El codigo canonico, que es el que hay que dictar: quien lo escribio
         # pudo teclearlo sin guion y la pantalla tiene que leer lo guardado.
         "anonymous_code": participant.anonymous_code,
@@ -109,10 +134,22 @@ async def list_participants(session: SessionDep, user: UserDep) -> list[dict]:
 
     participants = SqlParticipantRepository(session)
     repartos = await SqlSessionRepository(session).assignments()
+    credenciales = SqlAccessGrantRepository(session)
 
     salida: list[dict] = []
     for p in await participants.list_all():
         suyo = repartos.get(p.id, {})
+        # Si puede entrar o no es lo primero que hace falta saber cuando la
+        # persona ya está sentada delante, y hasta ahora no se veía en ninguna
+        # parte: la pantalla daba por hecho que todo registrado tenía acceso.
+        vigentes = [
+            g
+            for g in await credenciales.list_for(GrantKind.PARTICIPATION, str(p.id))
+            if g.is_active
+        ]
+        vence = max(
+            (g.expires_at for g in vigentes if g.expires_at), default=None
+        )
         salida.append(
             {
                 "participant_id": str(p.id),
@@ -122,6 +159,8 @@ async def list_participants(session: SessionDep, user: UserDep) -> list[dict]:
                 "order": suyo.get("order", []),
                 "first_batch": suyo.get("first_batch"),
                 "second_batch": suyo.get("second_batch"),
+                "puede_entrar": bool(vigentes),
+                "access_expires_at": vence.isoformat() if vence else None,
             }
         )
     return salida
