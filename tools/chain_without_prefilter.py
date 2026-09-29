@@ -94,19 +94,17 @@ def main() -> int:
             fa = f1(a[0], a[1], a[2])
             resumen[modelo]["con"].append(fa)
 
-            # Sin las ocho reconsultas no hay cadena sin filtro que calcular:
-            # sumar solo las noventa y dos daría una cifra sobre otro conjunto,
-            # que es el error que el asesor encontró en la línea base.
-            completo = len(reconsultados) == len(por_regla)
-            if completo:
-                b = matriz(juzgados + reconsultados)
-                fb = f1(b[0], b[1], b[2])
-                resumen[modelo]["sin"].append(fb)
-                print(f"{modelo:28s} {rep:>4s}  {fa:>11.3f}  {fb:>11.3f}")
-            else:
-                print(f"{modelo:28s} {rep:>4s}  {fa:>11.3f}  "
-                      f"{'pendiente':>11s}  ({len(reconsultados)}/"
-                      f"{len(por_regla)} reconsultadas)")
+            # Una reconsulta que el proveedor no llegó a contestar deja el
+            # hallazgo sin veredicto, que es lo mismo que una abstención: queda
+            # fuera de la matriz y se informa en la cobertura, no se rellena.
+            b = matriz(juzgados + reconsultados)
+            fb = f1(b[0], b[1], b[2])
+            resumen[modelo]["sin"].append(fb)
+            faltan = len(por_regla) - len(reconsultados)
+            cobertura = (b[0] + b[1] + b[2] + b[3]) / len(lote)
+            nota = f"  ({faltan} sin respuesta)" if faltan else ""
+            print(f"{modelo:28s} {rep:>4s}  {fa:>11.3f}  {fb:>11.3f}"
+                  f"  cobertura {cobertura:.3f}{nota}")
 
     print()
     for modelo, valores in resumen.items():
