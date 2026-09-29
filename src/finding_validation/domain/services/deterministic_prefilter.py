@@ -1,3 +1,30 @@
+"""Señal previa a la consulta: qué dice la traza por sí sola.
+
+Este filtro resolvía. Cuando reconocía un saneador antes del punto sensible,
+daba el hallazgo por no explotable y no lo consultaba, con lo que se ahorraba
+una llamada al modelo.
+
+La prueba de concepto sobre el conjunto con verdad conocida mostró el precio de
+ese ahorro: de las cien alertas resolvió ocho sin consultar, y las ocho eran
+vulnerabilidades reales. La causa es que reconocer un saneador por su nombre y
+comprobar que aparece antes en el texto no demuestra que el dato contaminado lo
+atraviese. En cuatro casos el saneador actuaba sobre otra variable; en el resto
+la debilidad no depende de un flujo de datos, como el uso de un generador de
+números débil, de modo que la pregunta por el saneamiento no aplicaba.
+
+Un error así no se ve en ninguna métrica del modelo, porque el hallazgo nunca
+llega al modelo y no hay veredicto que contrastar. En una herramienta de triaje
+de seguridad, una optimización que introduce falsos negativos silenciosos no se
+sostiene, así que la etapa deja de decidir.
+
+Lo que queda es la señal: el filtro sigue mirando la traza y declara lo que
+encuentra, y esa declaración se guarda en el rastro de la validación para que
+sea auditable. Todos los hallazgos pasan por el modelo. Cuando el proyecto
+disponga de seguimiento de contaminación suficiente para demostrar que el dato
+atraviesa el saneador, la etapa podrá volver a decidir, y entonces será una
+afirmación sobre el flujo y no sobre la coincidencia de un nombre.
+"""
+
 from dataclasses import dataclass
 from enum import Enum
 
@@ -6,10 +33,10 @@ from ..entities.finding import Finding
 
 
 class PrefilterOutcome(str, Enum):
-    """Qué hacer con el hallazgo antes de gastar una consulta."""
+    """Qué se sabe de la traza antes de consultar. Ninguno resuelve."""
 
     ESCALATE_TO_MODEL = "escalar_al_modelo"
-    RESOLVED_BY_RULE = "resuelto_por_regla"
+    ESCALATE_WITH_SIGNAL = "escalar_con_senal"
 
 
 @dataclass(frozen=True)
@@ -19,14 +46,20 @@ class PrefilterDecision:
 
     @property
     def spends_budget(self) -> bool:
-        return self.outcome is PrefilterOutcome.ESCALATE_TO_MODEL
+        """Siempre. La etapa ya no evita consultas, solo las acompaña."""
+        return True
+
+    @property
+    def has_sanitizer_signal(self) -> bool:
+        return self.outcome is PrefilterOutcome.ESCALATE_WITH_SIGNAL
 
 
 class DeterministicPrefilter:
-    """Resuelve sin consultar al modelo cuando la traza basta por sí sola.
+    """Observa la traza y declara lo que encuentra. No emite veredicto.
 
-    No es un clasificador: ante la duda escala. Resolver de más produce falsos
-    negativos silenciosos; escalar de más solo cuesta dinero.
+    La asimetría que gobernaba esta etapa sigue vigente y ahora es absoluta:
+    resolver de más produce falsos negativos silenciosos, escalar de más solo
+    cuesta dinero, de modo que se escala siempre.
     """
 
     def __init__(self, require_sanitizer_before_sink: bool = True) -> None:
@@ -36,8 +69,8 @@ class DeterministicPrefilter:
         if context.degraded_to_file:
             return PrefilterDecision(
                 PrefilterOutcome.ESCALATE_TO_MODEL,
-                "El contexto se recuperó degradado: no hay traza suficiente para "
-                "resolver por regla",
+                "El contexto se recuperó degradado: la traza no alcanza ni para "
+                "una señal",
             )
 
         if not context.has_sanitizers:
@@ -51,22 +84,25 @@ class DeterministicPrefilter:
         ):
             return PrefilterDecision(
                 PrefilterOutcome.ESCALATE_TO_MODEL,
-                "Hay saneador en la función, pero no se puede establecer que "
-                "actúe antes del punto sensible",
+                "Hay saneador en la función, pero no aparece antes del punto "
+                "sensible",
             )
 
         nombres = ", ".join(context.sanitizers)
         return PrefilterDecision(
-            PrefilterOutcome.RESOLVED_BY_RULE,
-            f"La ruta atraviesa saneamiento acreditado ({nombres}) antes del "
-            f"punto sensible",
+            PrefilterOutcome.ESCALATE_WITH_SIGNAL,
+            f"Señal: la función presenta saneamiento acreditado ({nombres}) "
+            f"antes del punto sensible. No se da por saneado: que el nombre "
+            f"aparezca antes no demuestra que el dato lo atraviese, de modo que "
+            f"el hallazgo se consulta igual",
         )
 
     def _sanitizer_precedes_sink(
         self, finding: Finding, context: CodeContext
     ) -> bool:
-        """Condición necesaria, no suficiente: no sustituye al seguimiento de
-        contaminación. Por eso lo resuelto aquí se marca aparte en la base."""
+        """Condición necesaria y no suficiente, que es justamente el motivo por
+        el que esta etapa ya no decide: no sustituye al seguimiento de la
+        contaminación."""
         sink_line = finding.location.start_line
         for line in context.text.splitlines():
             numero, _, contenido = line.partition(":")

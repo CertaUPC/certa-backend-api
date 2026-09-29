@@ -13,10 +13,7 @@ from ....domain.entities.verdict import Verdict, VerdictValue
 from ....domain.services.anchor_verifier import AnchorVerifier
 from ....domain.services.budget_guard import BudgetExhausted, BudgetGuard
 from ....domain.services.code_reader_port import CodeReaderPort
-from ....domain.services.deterministic_prefilter import (
-    DeterministicPrefilter,
-    PrefilterOutcome,
-)
+from ....domain.services.deterministic_prefilter import DeterministicPrefilter
 from ....domain.services.language_model_port import LanguageModelPort
 from ....domain.value_objects.justification import Justification
 from ....domain.value_objects.prompt_version import PromptVersion
@@ -107,14 +104,16 @@ class ValidateFindingCommandService:
             + (", degradado a archivo" if context.degraded_to_file else "")
         )
 
-        # --- Nivel 2 de la cascada: filtro determinista ----------------------
+        # --- Nivel 2 de la cascada: señal de la traza ------------------------
+        # Esta etapa resolvía sin consultar cuando reconocía un saneador antes
+        # del punto sensible. Sobre el conjunto con verdad conocida resolvió
+        # ocho alertas de cien y las ocho eran vulnerabilidades reales, porque
+        # que el nombre de un saneador aparezca antes no demuestra que el dato
+        # contaminado lo atraviese. Un falso negativo así no aparece en ninguna
+        # métrica del modelo, dado que el hallazgo no llega a consultarse. La
+        # etapa ya no decide: deja su lectura en el rastro y todo se consulta.
         decision = self._prefilter.decide(finding, context)
         outcome.trace.append(decision.reason)
-        if decision.outcome is PrefilterOutcome.RESOLVED_BY_RULE:
-            self._budget.record_rule_resolution()
-            outcome.verdict = self._verdict_by_rule(finding, decision.reason, repetition)
-            self._cache[self._cache_key(finding)] = outcome.verdict
-            return outcome
 
         # --- Etapas 2 y 3: juicio del modelo y verificación de anclaje -------
         retry_hint: str | None = None
@@ -185,28 +184,6 @@ class ValidateFindingCommandService:
         except ValueError:
             # Una respuesta fuera del contrato no se interpreta ni se adivina.
             return VerdictValue.UNDETERMINED
-
-    def _verdict_by_rule(
-        self, finding: Finding, reason: str, repetition: int
-    ) -> Verdict:
-        """Veredicto emitido sin consultar al modelo.
-
-        Se marca con el modelo `regla-determinista` para que la medición pueda
-        separar lo resuelto por regla de lo resuelto por juicio del modelo.
-        """
-        return Verdict(
-            finding_id=finding.id,
-            model="regla-determinista",
-            model_version=self._prompt_version.identifier,
-            value=VerdictValue.NOT_EXPLOITABLE,
-            justification=Justification(
-                text=reason,
-                cited_lines=frozenset({finding.location.start_line}),
-            ),
-            anchor_verified=True,
-            confidence=None,
-            repetition=repetition,
-        )
 
     @staticmethod
     def _clone_reused(source: Verdict, finding: Finding, repetition: int) -> Verdict:

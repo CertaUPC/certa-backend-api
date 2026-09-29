@@ -1,13 +1,16 @@
-"""El filtro que resuelve sin gastar una consulta.
+"""La señal que precede a la consulta, y que ya no decide por su cuenta.
 
-Su regla de conducta está escrita en el propio módulo y es asimétrica a
-propósito: resolver de más produce falsos negativos silenciosos, mientras que
-escalar de más solo cuesta dinero. Ante la duda, escala.
+Esta etapa resolvía: si reconocía un saneador antes del punto sensible, daba el
+hallazgo por no explotable y no lo consultaba. Sobre el conjunto con verdad
+conocida resolvió ocho alertas de cien y las ocho eran vulnerabilidades reales,
+porque que el nombre de un saneador aparezca antes en el texto no demuestra que
+el dato contaminado lo atraviese.
 
-Esa asimetría es lo que estas pruebas vigilan. Un filtro que se vuelva
-optimista descartaría vulnerabilidades reales sin que ninguna métrica lo
-delate, porque el hallazgo ni siquiera llegaría al modelo y no habría veredicto
-que contrastar.
+Lo que estas pruebas vigilan ahora es que ningún camino vuelva a producir un
+descarte sin consultar. Un falso negativo así no lo delata ninguna métrica del
+modelo: el hallazgo no llega al modelo y no hay veredicto que contrastar. La
+lectura de la traza se conserva como señal auditable, que es lo que una etapa
+con seguimiento de contaminación podrá convertir algún día en decisión.
 """
 
 import pytest
@@ -66,20 +69,33 @@ def filtro():
     return DeterministicPrefilter()
 
 
-class TestResuelvePorRegla:
-    def test_saneador_antes_del_sumidero(self, filtro):
-        d = filtro.decide(hallazgo(), contexto(ANTES, ("encodeForSQL",)))
-        assert d.outcome is PrefilterOutcome.RESOLVED_BY_RULE
+class TestNingunCaminoResuelve:
+    """La propiedad que sostiene el cambio: ninguna entrada evita la consulta."""
 
-    def test_lo_resuelto_no_gasta_presupuesto(self, filtro):
-        """Es la razón de existir del filtro: el hallazgo no llega al modelo."""
+    def test_el_saneador_antes_del_sumidero_ya_no_resuelve(self, filtro):
         d = filtro.decide(hallazgo(), contexto(ANTES, ("encodeForSQL",)))
-        assert not d.spends_budget
+        assert d.outcome is PrefilterOutcome.ESCALATE_WITH_SIGNAL
+        assert d.has_sanitizer_signal
 
-    def test_la_razon_nombra_el_saneador(self, filtro):
-        """Quien audite la decisión tiene que poder ver en qué se apoyó."""
+    def test_todo_hallazgo_gasta_consulta(self, filtro):
+        """Se comprueba sobre las cuatro entradas posibles, y no sobre una:
+        basta que una sola evite el modelo para que vuelva el falso negativo
+        silencioso."""
+        entradas = [
+            contexto(ANTES, ("encodeForSQL",)),
+            contexto(DESPUES, ("encodeForSQL",)),
+            contexto(SIN_SANEADOR, ()),
+            contexto(ANTES, ("encodeForSQL",), degradado=True),
+        ]
+        for ctx in entradas:
+            assert filtro.decide(hallazgo(), ctx).spends_budget
+
+    def test_la_señal_nombra_el_saneador_y_declara_su_limite(self, filtro):
+        """Quien audite la validación tiene que ver en qué se apoyó la señal y
+        por qué no alcanza para decidir."""
         d = filtro.decide(hallazgo(), contexto(ANTES, ("encodeForSQL",)))
         assert "encodeForSQL" in d.reason
+        assert "no demuestra que el dato lo atraviese" in d.reason
 
 
 class TestEscalaAlModelo:
@@ -123,23 +139,23 @@ class TestElOrdenSeLeeDeLaNumeracion:
 
 12: st.execute("..." + limpio);"""
         d = filtro.decide(hallazgo(), contexto(texto, ("encodeForSQL",)))
-        assert d.outcome is PrefilterOutcome.RESOLVED_BY_RULE
+        assert d.outcome is PrefilterOutcome.ESCALATE_WITH_SIGNAL
 
-    def test_un_sumidero_en_la_primera_linea_no_puede_resolverse(self, filtro):
+    def test_un_sumidero_en_la_primera_linea_no_deja_señal(self, filtro):
         d = filtro.decide(hallazgo(linea=8), contexto(ANTES, ("encodeForSQL",)))
         assert d.outcome is PrefilterOutcome.ESCALATE_TO_MODEL
 
 
-class TestLaReglaSePuedeApagar:
-    def test_sin_exigir_orden_basta_la_presencia(self, filtro):
-        """La exigencia de orden es configurable, y apagarla vuelve al filtro
-        más optimista. Se prueba para que el efecto quede a la vista de quien
-        decida apagarla."""
+class TestLaExigenciaDeOrdenSePuedeApagar:
+    def test_sin_exigir_orden_basta_la_presencia_para_la_señal(self, filtro):
+        """La exigencia de orden sigue siendo configurable y sigue cambiando la
+        señal, pero ya no cambia lo que se consulta: con la exigencia apagada,
+        un saneador posterior al sumidero produce señal, y aun así el hallazgo
+        va al modelo."""
         laxo = DeterministicPrefilter(require_sanitizer_before_sink=False)
-        estricto = filtro
         ctx = contexto(DESPUES, ("encodeForSQL",))
-        assert laxo.decide(hallazgo(), ctx).outcome is PrefilterOutcome.RESOLVED_BY_RULE
-        assert (
-            estricto.decide(hallazgo(), ctx).outcome
-            is PrefilterOutcome.ESCALATE_TO_MODEL
-        )
+        suelto = laxo.decide(hallazgo(), ctx)
+        estricto = filtro.decide(hallazgo(), ctx)
+        assert suelto.outcome is PrefilterOutcome.ESCALATE_WITH_SIGNAL
+        assert estricto.outcome is PrefilterOutcome.ESCALATE_TO_MODEL
+        assert suelto.spends_budget and estricto.spends_budget
