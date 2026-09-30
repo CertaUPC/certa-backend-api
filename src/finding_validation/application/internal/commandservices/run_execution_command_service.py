@@ -33,10 +33,14 @@ def _sin_contexto(cuantos: int, ultimo: str | None) -> str:
         if cuantos == 1
         else f"{cuantos} hallazgos seguidos se quedaron"
     )
+    # «El código» y no «el repositorio»: son dos causas distintas y el detalle
+    # que va detrás dice cuál es. Cuando el repositorio está donde debe y lo que
+    # falta es el archivo, el encabezado anterior contradecía a su propia
+    # explicación en la misma frase.
     return (
-        f"{cuenta} sin contexto recuperable, y ninguno se validó. El "
-        f"repositorio no parece estar donde este trabajador lo busca, así que "
-        f"la ejecución vuelve a la cola sin consumirse. {ultimo or ''}"
+        f"{cuenta} sin contexto recuperable, y ninguno se validó. El código no "
+        f"está donde este trabajador lo busca, así que la ejecución vuelve a la "
+        f"cola sin consumirse. {ultimo or ''}"
     ).strip()
 
 

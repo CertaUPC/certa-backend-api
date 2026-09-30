@@ -542,9 +542,13 @@ class TestElTrabajadorSoloTomaLoSuyo:
         informe = await runner.run(env["execution"])
 
         assert informe.interrupted
-        assert "no parece estar donde este trabajador lo busca" in (
+        assert "El código no está donde este trabajador lo busca" in (
             informe.interruption_reason or ""
         )
+        # Y la causa concreta viaja con ella: sin la ruta que se intentó, quien
+        # cargó la ejecución no sabe si movió el código o cargó el SARIF de otro
+        # árbol.
+        assert "Dao.java" in (informe.interruption_reason or "")
         # Y lo que importa: sigue pendiente, de modo que otro puede retomarla.
         assert env["execution"].is_claimable
 

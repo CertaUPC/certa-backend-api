@@ -485,11 +485,22 @@ def build_parser() -> argparse.ArgumentParser:
         )
         sp.add_argument("--timeout", type=int, default=900, help="Segundos máximos")
 
+    def desde_sarif(sp: argparse.ArgumentParser) -> None:
+        """Va en los dos subcomandos que analizan, no solo en uno.
+
+        `check` reutiliza `cmd_analyze`, que consulta esta opción antes de
+        decidir si llama al analizador. Cuando solo la tenía `analyze`, la
+        orden documentada en la cabecera de este módulo moría con un
+        AttributeError antes de analizar nada.
+        """
+        sp.add_argument("--sarif",
+                        help="Ingiere un SARIF ya generado en lugar de correr "
+                             "el analizador. Evita analizar dos veces el mismo "
+                             "corpus")
+
     a = sub.add_parser("analyze", help="Analiza un repositorio y crea la ejecución")
     common(a)
-    a.add_argument("--sarif",
-                   help="Ingiere un SARIF ya generado en lugar de correr el "
-                        "analizador. Evita analizar dos veces el mismo corpus")
+    desde_sarif(a)
 
     v = sub.add_parser("validate", help="Valida los hallazgos pendientes")
     v.add_argument("execution_id")
@@ -520,6 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("check", help="Analiza, valida y falla si hay hallazgos")
     common(c)
+    desde_sarif(c)
     c.add_argument(
         "--fail-on", choices=("real", "revisar"), default="real",
         help="Qué hace fallar la entrega: solo lo explotable, o también lo no verificable",
