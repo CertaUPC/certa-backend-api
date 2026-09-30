@@ -300,7 +300,7 @@ async def crear(sesion, owner_id: str) -> dict:
                         else None
                     ),
                     claimed_by=(
-                        None if c["estado"] == "pendiente" else "certa-worker"
+                        None if c["estado"] == "pendiente" else "trabajador-local"
                     ),
                 )
             )
