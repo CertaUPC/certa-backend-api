@@ -61,6 +61,18 @@ class DecisionRequest(BaseModel):
     comment: str | None = None
 
 
+class FinishSessionRequest(BaseModel):
+    """Cierre de la sesion del participante.
+
+    No trae si quedo completa: eso lo comprueba el servidor contra el
+    lote congelado. Si lo dijera el cliente, una pantalla que se cerrara
+    a destiempo podria declarar terminado lo que no lo esta.
+    """
+
+    participant_id: UUID
+    session_id: UUID
+
+
 class ParticipantRequest(BaseModel):
     anonymous_code: str = Field(min_length=1, max_length=20)
     # La ficha del anexo B, que antes vivia en un formulario aparte. Entra

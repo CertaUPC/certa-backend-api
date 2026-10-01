@@ -82,6 +82,9 @@ class ParticipantAccessResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     participant_id: str
+    # Sin esto el cliente no tenia como decir a que sesion pertenece
+    # cada decision, y las guardaba todas huerfanas.
+    session_id: str
     order: list[str]
     first_batch: str
     second_batch: str

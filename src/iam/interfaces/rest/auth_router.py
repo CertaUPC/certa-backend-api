@@ -326,6 +326,7 @@ async def participant_access(
     return ParticipantAccessResponse(
         access_token=token,
         participant_id=participante.id,
+        session_id=fila.id,
         order=list(fila.condition_order or []),
         first_batch=fila.first_batch,
         second_batch=fila.second_batch,

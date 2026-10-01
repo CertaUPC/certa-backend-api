@@ -14,11 +14,12 @@ from ....iam.interfaces.rest.dependencies import UserDep
 from ....shared.rest import SessionDep
 from ....finding_validation.interfaces.schemas.schemas import (
     DecisionRequest,
+    FinishSessionRequest,
     MetricsResponse,
     ParticipantRequest,
     SessionThemeRequest,
 )
-from ....shared.database import FindingRow, VerdictRow
+from ....shared.database import DecisionRow, FindingRow, VerdictRow
 from ....finding_validation.domain.entities.decision import Decision
 from ....finding_validation.infrastructure.persistence.sql_repositories import (
     SqlDecisionRepository,
@@ -136,6 +137,11 @@ async def list_participants(session: SessionDep, user: UserDep) -> list[dict]:
     repartos = await SqlSessionRepository(session).assignments()
     credenciales = SqlAccessGrantRepository(session)
 
+    lotes = SqlBatchRepository(session)
+    lote = await lotes.frozen_id()
+    del_lote = sum((await lotes.batches()).values()) if lote else 0
+    avance = await SqlSessionRepository(session).progress(lote)
+
     salida: list[dict] = []
     for p in await participants.list_all():
         suyo = repartos.get(p.id, {})
@@ -150,17 +156,44 @@ async def list_participants(session: SessionDep, user: UserDep) -> list[dict]:
         vence = max(
             (g.expires_at for g in vigentes if g.expires_at), default=None
         )
+        marcha = avance.get(p.id, {})
+        decidido = marcha.get("decided_by_condition", {})
         salida.append(
             {
                 "participant_id": str(p.id),
                 "anonymous_code": p.anonymous_code,
                 "experience_band": p.experience_band,
                 "is_pilot": p.is_pilot,
+                # La ficha que contestó al consentir. Es factor de control del
+                # análisis, y hasta ahora había que ir a la base para verla.
+                "main_language": p.main_language,
+                "alert_frequency": p.alert_frequency,
+                "security_training": p.security_training,
+                "has_security_role": p.has_security_role,
+                "consented_at": p.consented_at.isoformat() if p.consented_at else None,
                 "order": suyo.get("order", []),
                 "first_batch": suyo.get("first_batch"),
                 "second_batch": suyo.get("second_batch"),
                 "puede_entrar": bool(vigentes),
                 "access_expires_at": vence.isoformat() if vence else None,
+                # Cómo va. Sin esto no se distinguía a quien se registró y no
+                # empezó de quien recorrió los dos lotes.
+                "session_id": marcha.get("session_id"),
+                "is_complete": marcha.get("is_complete", False),
+                "started_at": (
+                    marcha["started_at"].isoformat()
+                    if marcha.get("started_at")
+                    else None
+                ),
+                "finished_at": (
+                    marcha["finished_at"].isoformat()
+                    if marcha.get("finished_at")
+                    else None
+                ),
+                "theme": marcha.get("theme"),
+                "decided_by_condition": decidido,
+                "decided": sum(decidido.values()),
+                "expected": del_lote,
             }
         )
     return salida
@@ -247,11 +280,17 @@ async def record_decision(
     """
     user.require_study_access(body.participant_id)
 
+    # El lote no se le pide al cliente: es unico y el servidor lo sabe.
+    # Pedirselo seria darle ocasion de equivocarse en un dato que no es
+    # suyo, y sin el no se puede decir contra que lote se midio.
+    lote = await SqlBatchRepository(session).frozen_id()
+
     try:
         decision = Decision(
             finding_id=body.finding_id,
             participant_id=body.participant_id,
             session_id=body.session_id,
+            worklist_id=lote,
             value=DecisionValue(body.value),
             seconds=body.seconds,
             condition=Condition(body.condition).value,
@@ -262,6 +301,51 @@ async def record_decision(
 
     await SqlDecisionRepository(session).save(decision)
     return {"decision_id": str(decision.id), "recorded": True}
+
+
+@router.post("/sessions/finish")
+async def finish_session(
+    body: FinishSessionRequest, session: SessionDep, user: UserDep
+) -> dict:
+    """Cierra la sesión del participante y declara si quedó completa.
+
+    El repositorio sabía cerrarla desde el principio y no había ruta que lo
+    pidiera, de modo que ninguna sesión podía marcarse terminada: el análisis
+    no distinguía a quien recorrió los dos lotes de quien abandonó en el
+    primero.
+
+    Lo completo no se declara desde el cliente. Se comprueba aquí contra el
+    lote congelado: una sesión está completa cuando el participante tiene una
+    decisión vigente para cada hallazgo de las dos mitades. Así el estado no
+    depende de que la pantalla llegue viva hasta el final.
+    """
+    user.require_study_access(body.participant_id)
+
+    lotes = SqlBatchRepository(session)
+    esperados: set[str] = set()
+    for mitad in ("A", "B"):
+        esperados |= {str(i) for i in await lotes.finding_ids(mitad)}
+
+    decididos = {
+        str(f[0])
+        for f in (
+            await session.execute(
+                select(DecisionRow.finding_id).where(
+                    DecisionRow.participant_id == str(body.participant_id),
+                    DecisionRow.is_current.is_(True),
+                )
+            )
+        ).all()
+    }
+
+    completa = bool(esperados) and esperados <= decididos
+    await SqlSessionRepository(session).close(body.session_id, completa)
+    return {
+        "session_id": str(body.session_id),
+        "is_complete": completa,
+        "decided": len(esperados & decididos),
+        "expected": len(esperados),
+    }
 
 
 @router.get("/findings/{finding_id}/decisions")

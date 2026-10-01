@@ -3,10 +3,15 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....shared.database import FindingRow, WorklistItemRow, WorklistRow
+from ....shared.database import (
+    DecisionRow,
+    FindingRow,
+    WorklistItemRow,
+    WorklistRow,
+)
 from ....shared.database_experiment import (
     ParticipantRow,
     SessionRow,
@@ -181,6 +186,63 @@ class SqlSessionRepository:
                 ordenes.append((Condition(valores[0]), Condition(valores[1])))
         return ordenes
 
+    async def progress(self, worklist_id: UUID | None) -> dict[UUID, dict]:
+        """Por participante: su sesión y cuánto lleva decidido del lote.
+
+        Una sola consulta y no una por persona: el listado se abre mientras
+        alguien espera sentado para empezar, y doce consultas encadenadas se
+        notan en una base remota.
+
+        Solo cuenta decisiones vigentes y solo sobre hallazgos del lote
+        congelado. Una rectificación no suma, y lo que se decidiera fuera del
+        lote tampoco, que es lo que el protocolo mide.
+        """
+        decididos = (
+            select(
+                DecisionRow.participant_id.label("pid"),
+                DecisionRow.condition.label("condicion"),
+                func.count(func.distinct(DecisionRow.finding_id)).label("cuantos"),
+            )
+            .join(WorklistItemRow, WorklistItemRow.finding_id == DecisionRow.finding_id)
+            .where(
+                DecisionRow.participant_id.is_not(None),
+                DecisionRow.is_current.is_(True),
+                WorklistItemRow.worklist_id == str(worklist_id),
+            )
+            .group_by(DecisionRow.participant_id, DecisionRow.condition)
+        )
+
+        por_condicion: dict[str, dict[str, int]] = {}
+        if worklist_id is not None:
+            for f in (await self._session.execute(decididos)).all():
+                por_condicion.setdefault(f.pid, {})[f.condicion or "sin_condicion"] = (
+                    f.cuantos
+                )
+
+        filas = (
+            await self._session.execute(
+                select(
+                    SessionRow.id,
+                    SessionRow.participant_id,
+                    SessionRow.is_complete,
+                    SessionRow.started_at,
+                    SessionRow.finished_at,
+                    SessionRow.theme,
+                )
+            )
+        ).all()
+        return {
+            UUID(f.participant_id): {
+                "session_id": f.id,
+                "is_complete": f.is_complete,
+                "started_at": f.started_at,
+                "finished_at": f.finished_at,
+                "theme": f.theme,
+                "decided_by_condition": por_condicion.get(f.participant_id, {}),
+            }
+            for f in filas
+        }
+
     async def close(self, session_id: UUID, complete: bool) -> None:
         """Cierra la sesión marcando si quedó completa.
 
@@ -260,6 +322,15 @@ class SqlBatchRepository:
                 .order_by(WorklistRow.frozen_at.desc())
             )
         ).scalars().first()
+
+    async def frozen_id(self) -> UUID | None:
+        """El lote congelado, para sellar con el cada decision del estudio.
+
+        Sin esto la decision no decia contra que lote se midio, y si
+        manana se congela otro no habria forma de separarlos.
+        """
+        fila = await self._frozen()
+        return UUID(fila.id) if fila else None
 
     async def execution_id(self) -> UUID | None:
         """Sobre qué ejecución corre el estudio. La pantalla de sesión la

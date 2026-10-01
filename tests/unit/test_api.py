@@ -2032,3 +2032,126 @@ class TestElListadoDeParticipantes:
             await client.get("/api/v1/experiment/participants", headers=_auth(token))
         ).json()
         assert [p["is_pilot"] for p in listado] == [True]
+
+
+class TestLaSesionQuedaSellada:
+    """Cada decisión dice a qué sesión y a qué lote pertenece, y la sesión
+    sabe cerrarse.
+
+    Se escribe después de encontrarlo en la corrida real del estudio: las
+    setenta y ocho decisiones de los dos primeros participantes se guardaron
+    con `session_id` y `worklist_id` nulos, porque el cliente no tenía el
+    identificador de la sesión y nadie ponía el del lote. Y ninguna sesión
+    podía marcarse completa, porque el repositorio sabía cerrarla y no había
+    ruta que lo pidiera. Las cifras se salvaron porque la condición sí
+    viajaba; la trazabilidad, no.
+    """
+
+    async def _preparar(self, client, token, codigo):
+        """Una ejecución con sus hallazgos, el lote congelado y un participante."""
+        eid = (
+            await client.post(
+                "/api/v1/executions",
+                json={"project_id": str(PROJECT_ID), "sarif": sarif_doc()},
+                headers=_auth(token),
+            )
+        ).json()["execution"]["id"]
+        await client.post(f"/api/v1/executions/{eid}/run", headers=_auth(token))
+        await _procesar(client)
+        hallazgos = (
+            await client.get(f"/api/v1/executions/{eid}/findings", headers=_auth(token))
+        ).json()
+
+        from src.experimentation.infrastructure.persistence.sql_repositories import (
+            SqlBatchRepository,
+        )
+
+        async with app.state.container.sessions() as s:
+            await SqlBatchRepository(s).replace_all(
+                [(hallazgos[0]["id"], "A", 0)]
+            )
+
+        alta = (
+            await client.post(
+                "/api/v1/experiment/participants",
+                json={
+                    "anonymous_code": codigo,
+                    "experience_band": "de_1_a_3",
+                    "consented": True,
+                },
+                headers=_auth(token),
+            )
+        ).json()
+        return hallazgos, alta
+
+    async def _decidir(self, client, token, hallazgo, alta, condicion):
+        return await client.post(
+            "/api/v1/experiment/decisions",
+            json={
+                "finding_id": hallazgo["id"],
+                "participant_id": alta["participant_id"],
+                "session_id": alta["session_id"],
+                "value": "confirmado",
+                "seconds": 12.0,
+                "condition": condicion,
+            },
+            headers=_auth(token),
+        )
+
+    async def test_la_credencial_devuelve_la_sesion(self, client):
+        """Sin esto el cliente no tenía cómo sellar la decisión."""
+        token = await _token(client)
+        _, alta = await self._preparar(client, token, "P78")
+        r = await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": "P78"}
+        )
+        assert r.status_code == 200
+        assert r.json()["session_id"] == alta["session_id"]
+
+    async def test_la_decision_guarda_su_sesion_y_su_lote(self, client):
+        token = await _token(client)
+        hallazgos, alta = await self._preparar(client, token, "P79")
+        assert (
+            await self._decidir(client, token, hallazgos[0], alta, "con_asistente")
+        ).status_code == 201
+
+        from sqlalchemy import select as _sel
+        from src.shared.database import DecisionRow
+
+        async with app.state.container.sessions() as s:
+            fila = (
+                await s.execute(
+                    _sel(DecisionRow).where(
+                        DecisionRow.participant_id == alta["participant_id"]
+                    )
+                )
+            ).scalars().first()
+        assert fila.session_id == alta["session_id"]
+        assert fila.worklist_id is not None
+
+    async def test_la_sesion_se_cierra_y_el_servidor_decide_si_esta_completa(
+        self, client
+    ):
+        """Lo completo se comprueba contra el lote, no se cree al cliente."""
+        token = await _token(client)
+        hallazgos, alta = await self._preparar(client, token, "P80")
+        cierre = {
+            "participant_id": alta["participant_id"],
+            "session_id": alta["session_id"],
+        }
+
+        # Sin decidir nada, la sesión se cierra pero no queda completa.
+        r = await client.post(
+            "/api/v1/experiment/sessions/finish", json=cierre, headers=_auth(token)
+        )
+        assert r.status_code == 200
+        assert r.json()["is_complete"] is False
+        assert r.json()["decided"] == 0 and r.json()["expected"] == 1
+
+        # Recorrido el lote, sí.
+        await self._decidir(client, token, hallazgos[0], alta, "con_asistente")
+        r = await client.post(
+            "/api/v1/experiment/sessions/finish", json=cierre, headers=_auth(token)
+        )
+        assert r.json()["is_complete"] is True
+        assert r.json()["decided"] == 1
