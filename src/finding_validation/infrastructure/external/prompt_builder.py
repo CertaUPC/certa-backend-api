@@ -26,6 +26,11 @@ ausente invalida tu respuesta completa.
 adivinar. Es una respuesta legítima y preferible a una conclusión sin respaldo.
 5. El nombre de una función no prueba lo que hace. Si una función se llama \
 validarEntrada pero su cuerpo no aparece, no puedes afirmar que valide.
+6. La regla 5 rige en los dos sentidos. El fragmento incluye el cuerpo de las \
+funciones llamadas que figuran en «Llamados incluidos»: búscalo y resuélvelo \
+antes de declarar que falta. Afirmar que un cuerpo no aparece cuando sí está \
+entregado es tan grave como suponer un saneamiento inexistente, y convierte un \
+"indeterminado" en una respuesta sin respaldo.
 
 Responde exclusivamente con un objeto JSON que cumpla este contrato:
 {contract}
@@ -41,6 +46,7 @@ Mensaje de la herramienta: {message}
 CONTEXTO RECUPERADO
 Función contenedora: {enclosing}
 Llamadores incluidos: {callers}
+Llamados incluidos, con su cuerpo entero: {callees}
 Funciones cuyo nombre sugiere saneamiento: {sanitizers}
 {degraded}
 Líneas disponibles: {line_range}
@@ -58,12 +64,33 @@ CORRECCIÓN REQUERIDA
 _CONTRACT_TEXT = "\n".join(f'  "{k}": {v}' for k, v in OUTPUT_CONTRACT_V1.items())
 
 CURRENT_VERSION = PromptVersion.of(
-    "v1", SYSTEM_PROMPT + USER_TEMPLATE, OUTPUT_CONTRACT_V1
+    "v2", SYSTEM_PROMPT + USER_TEMPLATE, OUTPUT_CONTRACT_V1
 )
 
 
 def system_prompt() -> str:
     return SYSTEM_PROMPT.format(contract="{\n" + _CONTRACT_TEXT + "\n}")
+
+
+def line_ranges(lineas: list[int]) -> str:
+    """Las líneas disponibles por tramos, en vez de por sus extremos.
+
+    Antes se anunciaba «32 a 74» y dentro de ese intervalo faltaban la 37 y la
+    62, que son las líneas en blanco entre un método y el siguiente. La regla 3
+    invalida la respuesta que cite una línea ausente, de modo que el rango
+    prometía dos líneas que nadie entregó.
+    """
+    if not lineas:
+        return "ninguna"
+    tramos: list[list[int]] = []
+    for n in lineas:
+        if tramos and n == tramos[-1][1] + 1:
+            tramos[-1][1] = n
+        else:
+            tramos.append([n, n])
+    return ", ".join(
+        str(a) if a == b else f"{a}-{b}" for a, b in tramos
+    )
 
 
 def build_user_prompt(
@@ -86,9 +113,14 @@ def build_user_prompt(
         message=finding.message or "sin mensaje",
         enclosing=context.enclosing_function,
         callers=", ".join(context.callers) or "ninguno",
+        # El recuperador ya pegaba estos cuerpos en el código y el inventario no
+        # los nombraba. El modelo leía «Llamadores incluidos: doGet», no veía
+        # mención del llamado y declaraba ausente un cuerpo que tenía delante:
+        # once de los veinticuatro hallazgos del lote del estudio salieron así.
+        callees=", ".join(context.callees) or "ninguno",
         sanitizers=", ".join(context.sanitizers) or "ninguna",
         degraded=degraded,
-        line_range=f"{lineas[0]} a {lineas[-1]}" if lineas else "ninguna",
+        line_range=line_ranges(lineas),
         code=context.text,
     )
     if retry_hint:
