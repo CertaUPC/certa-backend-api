@@ -2155,3 +2155,106 @@ class TestLaSesionQuedaSellada:
         )
         assert r.json()["is_complete"] is True
         assert r.json()["decided"] == 1
+
+
+class TestVolverAEntrarEmpiezaDeCero:
+    """Entrar con un codigo que ya tiene tanda sustituye la tanda anterior.
+
+    El estudio no guarda dos tandas bajo el mismo codigo. Si las dejara
+    convivir, la decision que entra se guardaria como rectificacion de la de
+    otra persona y el analisis intrasujeto emparejaria la mitad de una con la
+    mitad de otra, sin que eso se vea en ninguna pantalla.
+    """
+
+    async def _entrar(self, client, codigo):
+        return await client.post(
+            "/api/v1/auth/participant", json={"anonymous_code": codigo}
+        )
+
+    async def test_la_tanda_anterior_se_descarta_y_la_sesion_vuelve_a_cero(
+        self, client
+    ):
+        token = await _token(client)
+        sellada = TestLaSesionQuedaSellada()
+        hallazgos, alta = await sellada._preparar(client, token, "P81")
+        await sellada._decidir(client, token, hallazgos[0], alta, "con_asistente")
+
+        cierre = {
+            "participant_id": alta["participant_id"],
+            "session_id": alta["session_id"],
+        }
+        await client.post(
+            "/api/v1/experiment/sessions/finish", json=cierre, headers=_auth(token)
+        )
+
+        vuelta = await self._entrar(client, "P81")
+        assert vuelta.status_code == 200
+        assert vuelta.json()["discarded_decisions"] == 1
+        # La misma fila de sesion, para que el identificador que viaja con cada
+        # decision siga siendo valido.
+        assert vuelta.json()["session_id"] == alta["session_id"]
+
+        from sqlalchemy import func, select as _sel
+        from src.shared.database import DecisionRow
+        from src.shared.database_experiment import SessionRow
+
+        async with app.state.container.sessions() as s:
+            cuantas = (
+                await s.execute(
+                    _sel(func.count()).select_from(DecisionRow).where(
+                        DecisionRow.participant_id == alta["participant_id"]
+                    )
+                )
+            ).scalar_one()
+            fila = (
+                await s.execute(
+                    _sel(SessionRow).where(
+                        SessionRow.participant_id == alta["participant_id"]
+                    )
+                )
+            ).scalars().one()
+        assert cuantas == 0
+        assert fila.is_complete is False
+        assert fila.finished_at is None
+
+    async def test_el_reparto_se_conserva(self, client):
+        """El contrabalanceo se asigno por orden de llegada: no se rifa otra vez."""
+        token = await _token(client)
+        sellada = TestLaSesionQuedaSellada()
+        hallazgos, alta = await sellada._preparar(client, token, "P82")
+        await sellada._decidir(client, token, hallazgos[0], alta, "con_asistente")
+
+        vuelta = (await self._entrar(client, "P82")).json()
+        assert vuelta["order"] == alta["order"]
+        assert vuelta["first_batch"] == alta["first_batch"]
+        assert vuelta["second_batch"] == alta["second_batch"]
+
+    async def test_una_entrada_limpia_no_descarta_nada(self, client):
+        token = await _token(client)
+        sellada = TestLaSesionQuedaSellada()
+        await sellada._preparar(client, token, "P83")
+        assert (await self._entrar(client, "P83")).json()["discarded_decisions"] == 0
+
+    async def test_el_material_del_estudio_no_se_toca(self, client):
+        """Los hallazgos y sus veredictos no pertenecen a ninguna persona."""
+        token = await _token(client)
+        sellada = TestLaSesionQuedaSellada()
+        hallazgos, alta = await sellada._preparar(client, token, "P84")
+        await sellada._decidir(client, token, hallazgos[0], alta, "con_asistente")
+
+        from sqlalchemy import func, select as _sel
+        from src.shared.database import FindingRow, VerdictRow
+
+        async def cuantos():
+            async with app.state.container.sessions() as s:
+                h = (
+                    await s.execute(_sel(func.count()).select_from(FindingRow))
+                ).scalar_one()
+                v = (
+                    await s.execute(_sel(func.count()).select_from(VerdictRow))
+                ).scalar_one()
+            return h, v
+
+        antes = await cuantos()
+        await self._entrar(client, "P84")
+        assert await cuantos() == antes

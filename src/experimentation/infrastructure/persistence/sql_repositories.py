@@ -260,6 +260,47 @@ class SqlSessionRepository:
 
 
 
+    async def restart_round(self, participant_id: UUID) -> int:
+        """Borra lo que ese participante decidió y le devuelve la sesión a cero.
+
+        Se invoca cuando alguien vuelve a entrar con un código que ya tiene
+        tanda. El estudio no guarda dos tandas bajo el mismo código: la que
+        entra sustituye a la que había, de modo que el análisis no tenga que
+        adivinar cuál de las dos es la buena ni emparejar la mitad de una
+        persona con la mitad de otra.
+
+        No se toca el reparto. El orden de condiciones y las dos mitades se
+        asignaron por orden de llegada para que el contrabalanceo quede
+        equilibrado, y conservarlos mantiene ese equilibrio aunque la tanda sea
+        otra.
+
+        Tampoco se toca nada de la ejecución: los hallazgos, sus fragmentos y
+        los veredictos son el material del estudio y no pertenecen a ninguna
+        persona.
+        """
+        borradas = (
+            await self._session.execute(
+                delete(DecisionRow).where(
+                    DecisionRow.participant_id == str(participant_id)
+                )
+            )
+        ).rowcount or 0
+        await self._session.execute(
+            update(SessionRow)
+            .where(SessionRow.participant_id == str(participant_id))
+            .values(
+                is_complete=False,
+                finished_at=None,
+                started_at=datetime.now(timezone.utc),
+                # El tema se fija al empezar y pertenece a la tanda, no a la
+                # persona: la que entra lo vuelve a fijar.
+                theme=None,
+            )
+        )
+        await self._session.commit()
+        return borradas
+
+
 class SqlTransformationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session

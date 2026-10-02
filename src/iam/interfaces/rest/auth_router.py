@@ -1,6 +1,6 @@
 """Inicio de sesión, registro de usuarios y credenciales acotadas."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
@@ -269,12 +269,14 @@ async def participant_access(
     Lo que evita es el apaño anterior, que el participante entrara en el
     navegador del investigador con la sesión de este abierta.
     """
-    from sqlalchemy import select as _select
+    from sqlalchemy import func, select as _select
 
     from ....experimentation.domain.entities.participant import normalizar_codigo
     from ....experimentation.infrastructure.persistence.sql_repositories import (
         SqlBatchRepository,
+        SqlSessionRepository,
     )
+    from ....shared.database import DecisionRow
     from ....shared.database_experiment import ParticipantRow, SessionRow
 
     negado = HTTPException(
@@ -313,6 +315,29 @@ async def participant_access(
     if fila is None:
         raise negado
 
+    # Entrar con un código que ya tiene tanda empieza una tanda nueva, y la
+    # anterior se va con ella. El estudio no guarda dos bajo el mismo código:
+    # si las dejara convivir, la decisión que entra se guardaría como
+    # rectificación de la de otra persona y el emparejamiento intrasujeto
+    # terminaría cruzando la mitad de una con la mitad de otra, sin que se vea
+    # en ninguna pantalla.
+    #
+    # Se queda con la misma fila de sesión y con el reparto que tenía, de modo
+    # que el identificador que viaja con cada decisión siga siendo válido y el
+    # contrabalanceo no se desequilibre.
+    previas = (
+        await session.execute(
+            _select(func.count())
+            .select_from(DecisionRow)
+            .where(DecisionRow.participant_id == participante.id)
+        )
+    ).scalar_one()
+    descartadas = 0
+    if previas:
+        descartadas = await SqlSessionRepository(session).restart_round(
+            UUID(participante.id)
+        )
+
     grant = vigentes[0]
     await repo.touch(grant.id)
     token = issue_token(
@@ -332,4 +357,5 @@ async def participant_access(
         second_batch=fila.second_batch,
         execution_id=str(await SqlBatchRepository(session).execution_id() or "")
         or None,
+        discarded_decisions=descartadas,
     )

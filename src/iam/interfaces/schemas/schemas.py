@@ -91,3 +91,7 @@ class ParticipantAccessResponse(BaseModel):
     # Sobre que ejecucion corre el estudio. Sale del lote congelado y no del
     # participante, que no tiene por que saberla ni escribirla en la direccion.
     execution_id: str | None = None
+    # Cuantas decisiones se descartaron al empezar esta tanda. Es cero en una
+    # entrada limpia; si no lo es, ese codigo ya tenia tanda y la que entra la
+    # sustituyo. Lo lee quien dirige el estudio, no el participante.
+    discarded_decisions: int = 0
