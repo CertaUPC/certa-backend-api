@@ -2171,6 +2171,57 @@ class TestVolverAEntrarEmpiezaDeCero:
             "/api/v1/auth/participant", json={"anonymous_code": codigo}
         )
 
+    @staticmethod
+    async def _envejecer(participant_id, horas):
+        """Retrasa las decisiones del participante, para probar el corte.
+
+        El corte mira la hora de la ultima decision, de modo que probarlo exige
+        una tanda vieja. Envejecerla es la unica forma de tener una sin esperar.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import update as _upd
+        from src.shared.database import DecisionRow
+
+        async with app.state.container.sessions() as s:
+            await s.execute(
+                _upd(DecisionRow)
+                .where(DecisionRow.participant_id == participant_id)
+                .values(
+                    created_at=datetime.now(timezone.utc) - timedelta(hours=horas)
+                )
+            )
+            await s.commit()
+
+    async def test_una_tanda_reciente_se_retoma_y_no_se_borra(self, client):
+        """A quien se le cierra la pestana no se le quita lo que llevaba.
+
+        El token vive en la pestana y dura dos horas, asi que teclear el codigo
+        es la unica forma de volver. Con un borrado incondicional, volver y
+        perder lo hecho eran la misma cosa.
+        """
+        token = await _token(client)
+        sellada = TestLaSesionQuedaSellada()
+        hallazgos, alta = await sellada._preparar(client, token, "P85")
+        await sellada._decidir(client, token, hallazgos[0], alta, "con_asistente")
+
+        vuelta = await self._entrar(client, "P85")
+        assert vuelta.status_code == 200
+        assert vuelta.json()["discarded_decisions"] == 0
+
+        from sqlalchemy import func, select as _sel
+        from src.shared.database import DecisionRow
+
+        async with app.state.container.sessions() as s:
+            cuantas = (
+                await s.execute(
+                    _sel(func.count()).select_from(DecisionRow).where(
+                        DecisionRow.participant_id == alta["participant_id"]
+                    )
+                )
+            ).scalar_one()
+        assert cuantas == 1
+
     async def test_la_tanda_anterior_se_descarta_y_la_sesion_vuelve_a_cero(
         self, client
     ):
@@ -2186,6 +2237,10 @@ class TestVolverAEntrarEmpiezaDeCero:
         await client.post(
             "/api/v1/experiment/sessions/finish", json=cierre, headers=_auth(token)
         )
+
+        # Siete horas: por encima del corte de seis, que es lo que distingue un
+        # codigo reciclado de una pestana que se cerro hace un rato.
+        await self._envejecer(alta["participant_id"], 7)
 
         vuelta = await self._entrar(client, "P81")
         assert vuelta.status_code == 200
@@ -2223,6 +2278,7 @@ class TestVolverAEntrarEmpiezaDeCero:
         sellada = TestLaSesionQuedaSellada()
         hallazgos, alta = await sellada._preparar(client, token, "P82")
         await sellada._decidir(client, token, hallazgos[0], alta, "con_asistente")
+        await self._envejecer(alta["participant_id"], 7)
 
         vuelta = (await self._entrar(client, "P82")).json()
         assert vuelta["order"] == alta["order"]
@@ -2241,6 +2297,7 @@ class TestVolverAEntrarEmpiezaDeCero:
         sellada = TestLaSesionQuedaSellada()
         hallazgos, alta = await sellada._preparar(client, token, "P84")
         await sellada._decidir(client, token, hallazgos[0], alta, "con_asistente")
+        await self._envejecer(alta["participant_id"], 7)
 
         from sqlalchemy import func, select as _sel
         from src.shared.database import FindingRow, VerdictRow

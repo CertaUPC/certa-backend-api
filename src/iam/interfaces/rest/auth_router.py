@@ -1,5 +1,6 @@
 """Inicio de sesión, registro de usuarios y credenciales acotadas."""
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, status
@@ -35,6 +36,15 @@ EXCHANGE_MINUTES = {
     GrantKind.WORKER: 30,
     GrantKind.PARTICIPATION: 120,
 }
+
+# Cuánto tiene que llevar quieta una tanda para que entrar con su código la
+# retire en vez de retomarla. Seis horas separa los dos casos reales sin
+# preguntar nada: un código reciclado para otra persona lleva al menos una
+# jornada sin uso, y una pestaña cerrada a mitad de sesión lleva minutos.
+# Holgado a propósito: equivocarse por retomar cuesta una tanda que se puede
+# retirar a mano, y equivocarse por borrar cuesta una sesión de una hora que
+# alguien ya dedicó.
+REINICIO_TRAS = timedelta(hours=6)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -322,21 +332,39 @@ async def participant_access(
     # terminaría cruzando la mitad de una con la mitad de otra, sin que se vea
     # en ninguna pantalla.
     #
+    # Pero no se borra una tanda que acaba de ocurrir. El token del
+    # participante vive en el almacenamiento de la pestaña y dura dos horas, de
+    # modo que a quien se le cierra el navegador o se le agota el token no le
+    # queda otra forma de volver que teclear su código. Con un borrado
+    # incondicional, volver y perder lo hecho eran la misma cosa, y una persona
+    # a seis alertas del final tenía que repetir la sesión entera.
+    #
+    # El corte en horas distingue los dos casos sin preguntar nada: un código
+    # que se recicla para otra persona lleva horas o días sin uso, y una
+    # pestaña que se cerró a mitad lleva minutos.
+    #
     # Se queda con la misma fila de sesión y con el reparto que tenía, de modo
     # que el identificador que viaja con cada decisión siga siendo válido y el
     # contrabalanceo no se desequilibre.
-    previas = (
+    ultima = (
         await session.execute(
-            _select(func.count())
-            .select_from(DecisionRow)
-            .where(DecisionRow.participant_id == participante.id)
+            _select(func.max(DecisionRow.created_at)).where(
+                DecisionRow.participant_id == participante.id
+            )
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
     descartadas = 0
-    if previas:
-        descartadas = await SqlSessionRepository(session).restart_round(
-            UUID(participante.id)
-        )
+    if ultima is not None:
+        # SQLite devuelve la fecha sin zona y PostgreSQL con ella. Comparar una
+        # con otra levanta TypeError, de modo que la que llegue desnuda se lee
+        # como UTC, que es en lo que se escribio.
+        if ultima.tzinfo is None:
+            ultima = ultima.replace(tzinfo=timezone.utc)
+        reciente = ultima > datetime.now(timezone.utc) - REINICIO_TRAS
+        if not reciente:
+            descartadas = await SqlSessionRepository(session).restart_round(
+                UUID(participante.id)
+            )
 
     grant = vigentes[0]
     await repo.touch(grant.id)
